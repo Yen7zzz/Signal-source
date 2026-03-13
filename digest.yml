@@ -1,0 +1,34 @@
+name: 📧 每週產業週報
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'   # 每週一 UTC 01:00（台灣時間週一早上 09:00）
+  workflow_dispatch:        # 手動觸發，方便測試
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+
+    env:
+      EMAIL_SENDER:    ${{ secrets.EMAIL_SENDER }}
+      EMAIL_PASSWORD:  ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+
+    steps:
+      - name: 拉取程式碼和資料庫
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 建立必要資料夾
+        run: mkdir -p data logs
+
+      - name: 生成並寄出週報
+        run: python pipeline_digest.py
