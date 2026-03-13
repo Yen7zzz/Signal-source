@@ -12,6 +12,15 @@
 
 import os
 
+# ── AI 設定 ───────────────────────────────────────────────────
+# 測試階段用 Groq（免費），之後換 Gemini 只需改這裡
+GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL    = "llama-3.3-70b-versatile"
+
+# 評分門檻：低於此分數的文章不會出現在週報中
+# 建議先用 6 跑幾週，觀察結果後再調整
+AI_SCORE_THRESHOLD = 6
+
 # ── Email 設定 ────────────────────────────────────────────────
 EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")
 EMAIL_PASSWORD  = os.environ.get("EMAIL_PASSWORD", "")       # Gmail App Password
@@ -65,16 +74,13 @@ TRENDFORCE_KEYWORDS = [
 # DIGITIMES — RSS
 DIGITIMES_RSS = "https://www.digitimes.com/rss/daily.xml"
 
-# Seeking Alpha — RSS（免費文章）
-SEEKING_ALPHA_RSS = "https://seekingalpha.com/feed.xml"
-
 # SEC EDGAR — 官方 API（免費，無需 API Key）
 # 追蹤的表單類型：
 #   8-K  → 重大事件公告（法說會、重大合約）
 #   10-Q → 季報（財務數據、CapEx）
 #   10-K → 年報
 SEC_FILING_TYPES = ["8-K", "10-Q"]
-SEC_USER_AGENT   = os.environ.get("SEC_USER_AGENT", "IndustryRadar contact@example.com")
+SEC_USER_AGENT   = os.environ.get("SEC_USER_AGENT", "IndustryRadar jason071491@gmail.com")
 # SEC EDGAR 要求 User-Agent 格式：「公司名稱 email」
 # 請把 GitHub Secret SEC_USER_AGENT 設為你的 email，例如：
 # "IndustryRadar your@email.com"
