@@ -253,11 +253,12 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
         forms = recent.get("form", [])
         dates = recent.get("filingDate", [])
         accessions = recent.get("accessionNumber", [])
+        items_list = recent.get("items", [])
         company_name = company_info["name"]
 
         cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-        for form, date, accession in zip(forms, dates, accessions):
+        for form, date, accession, items_str in zip(forms, dates, accessions, items_list):
             if form not in SEC_FILING_TYPES:
                 continue
 
@@ -271,22 +272,23 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
                 f"{cik_clean}/{accession_fmt}/{accession}-index.htm"
             )
 
-            # ★ 改動：嘗試抓 8-K 的 Item 列表作為 summary
-            summary = _get_8k_items(accession, cik_clean, sec_headers) if form == "8-K" else ""
-
-            # 8-K 過濾：只保留高價值 Item；fetch 失敗（空字串）視為不確定，保留
-            if form == "8-K" and summary:
-                if not any(f"Item {item}" in summary for item in SEC_8K_VALUABLE_ITEMS):
-                    print(f"      ⏭️  跳過低價值 8-K：{company_name} {date} — {summary[:60]}")
+            # 8-K 過濾：直接用 submissions JSON 的 items 欄位（如 "2.02,9.01"）
+            # items_str 為空表示 JSON 沒有資料，視為不確定，保留
+            if form == "8-K":
+                if items_str and not any(item in items_str for item in SEC_8K_VALUABLE_ITEMS):
+                    print(f"      ⏭️  跳過低價值 8-K：{company_name} {date} — Items: {items_str}")
                     continue
 
+            # summary：8-K 用 items 字串，10-Q 用財報週期說明
+            if form == "8-K":
+                summary = f"Items: {items_str}" if items_str else ""
+            else:
+                summary = ""
+
             if not summary:
-                # 10-Q 就用財報週期說明
+                # 10-Q 或 items 為空的 8-K
                 quarter = _estimate_quarter(date)
                 summary = f"{company_name} {quarter} 季報，財務數據與 CapEx 指引"
-
-            if form == "8-K":
-                print(f"      ✅ 保留高價值 8-K：{company_name} {date} — {summary[:60]}")
 
             articles.append({
                 "source_type": "sec_edgar",
@@ -309,34 +311,6 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
 
     return articles
 
-
-def _get_8k_items(accession: str, cik_clean: str, headers: dict) -> str:
-    """
-    抓取 8-K 的 filing index，解析出 Item 條目
-    例如："Item 2.02: Results of Operations | Item 9.01: Financial Statements"
-
-    這讓你不用點開文件就知道這份 8-K 是法說會還是重大合約
-    """
-    try:
-        accession_fmt = accession.replace("-", "")
-        idx_url = (
-            f"https://www.sec.gov/Archives/edgar/data/"
-            f"{cik_clean}/{accession_fmt}/{accession}-index.htm"
-        )
-        resp = requests.get(idx_url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 8-K index 頁面有 "Items" 段落
-        items_text = ""
-        for td in soup.find_all("td"):
-            text = td.get_text(strip=True)
-            if text.startswith("Item "):
-                items_text += text + " | "
-
-        return items_text.strip(" |")[:300] if items_text else ""
-    except Exception:
-        return ""
 
 
 def _estimate_quarter(date_str: str) -> str:
