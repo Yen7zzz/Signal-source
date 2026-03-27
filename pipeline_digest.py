@@ -13,13 +13,15 @@ import logging
 import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 from collections import defaultdict
 from database import get_recent_articles
 from config import (
     EMAIL_SENDER, EMAIL_PASSWORD,
     EMAIL_RECEIVERS, SMTP_HOST, SMTP_PORT,
-    DIGEST_DAYS, AI_SCORE_THRESHOLD,
+    DIGEST_DAYS, AI_SCORE_THRESHOLD, FULL_CONTENT_SCORE_THRESHOLD,
 )
 
 os.makedirs("logs", exist_ok=True)
@@ -64,6 +66,55 @@ def _score_bar(score: int) -> str:
     return f'<span style="font-family:monospace;color:{color};font-size:13px;">{filled}{empty}</span> <strong style="color:{color};">{score}/10</strong>'
 
 
+def build_analysis_pack() -> str:
+    """產出給 LLM 分析用的 Markdown pack（非人類閱讀）"""
+    all_articles  = get_recent_articles(days=DIGEST_DAYS)
+    pack_articles = get_recent_articles(days=DIGEST_DAYS, min_score=FULL_CONTENT_SCORE_THRESHOLD)
+    pack_articles = sorted(pack_articles, key=lambda a: a.get("ai_score") or 0, reverse=True)
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    lines = [
+        f"# Signal-Source Analysis Pack — {date_str}",
+        "",
+        f"本週收集：{len(all_articles)} 篇 | AI 評分 ≥ {FULL_CONTENT_SCORE_THRESHOLD} 精選：{len(pack_articles)} 篇",
+        "",
+        "---",
+    ]
+
+    for article in pack_articles:
+        score        = article.get("ai_score")
+        title        = article.get("title", "")
+        source_type  = article.get("source_type", "")
+        ticker       = article.get("ticker", "")
+        published    = article.get("published", "")
+        ai_summary   = article.get("ai_summary", "")
+        full_content = article.get("full_content", "")
+
+        score_label = f"{score}/10" if score is not None else "?/10"
+        meta_label  = SOURCE_META.get(source_type, {}).get("label", source_type)
+
+        lines.append("")
+        lines.append(f"## [{score_label}] {title}")
+        lines.append("")
+        lines.append(f"- 來源：{meta_label}")
+        if ticker:
+            lines.append(f"- 公司：{ticker}")
+        if published:
+            lines.append(f"- 日期：{published[:10]}")
+        if ai_summary:
+            lines.append("")
+            lines.append(f"**重點：** {ai_summary}")
+        if full_content:
+            lines.append("")
+            lines.append("### 全文")
+            lines.append("")
+            lines.append(full_content)
+        lines.append("")
+        lines.append("---")
+
+    return "\n".join(lines)
+
+
 def build_article_html(article: dict) -> str:
     """單篇文章的 HTML 區塊，含 AI 評分和重點摘要"""
     title       = article.get("title", "")
@@ -99,6 +150,38 @@ def build_article_html(article: dict) -> str:
             <a href="{url}" style="font-size:12px;color:#6366f1;text-decoration:none;">原文連結 →</a>
         </div>
     </div>"""
+
+
+def build_digest_html(total_collected: int, total_threshold: int, total_pack: int) -> str:
+    """精簡版 Email HTML：只顯示統計漏斗，正文詳見附件"""
+    date_str = datetime.now().strftime("%Y 年 %m 月 %d 日")
+    filename = f"analysis_pack_{datetime.now().strftime('%Y-%m-%d')}.md"
+    return f"""
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family:-apple-system,Arial,sans-serif;max-width:700px;margin:auto;padding:24px;color:#111827;">
+
+        <div style="text-align:center;padding:28px 0;border-bottom:1px solid #e5e7eb;margin-bottom:32px;">
+            <h1 style="font-size:24px;color:#111827;margin:0;">📡 Signal-Source 週報</h1>
+            <p style="color:#6b7280;margin-top:8px;font-size:14px;">{date_str} · AI 預評分篩選</p>
+            <p style="color:#9ca3af;font-size:13px;margin-top:4px;">
+                本週收集 {total_collected} 篇
+                → ≥{AI_SCORE_THRESHOLD} 分 {total_threshold} 篇
+                → ≥{FULL_CONTENT_SCORE_THRESHOLD} 分精選 {total_pack} 篇
+            </p>
+        </div>
+
+        <div style="padding:20px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;text-align:center;">
+            <p style="margin:0;font-size:15px;color:#0369a1;">
+                詳細情報請見附件 <strong>{filename}</strong>
+            </p>
+        </div>
+
+        <div style="text-align:center;padding:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;margin-top:32px;">
+            Signal-Source 自動生成 · AI 評分由 Groq 提供
+        </div>
+    </body>
+    </html>"""
 
 
 def build_email_html(articles_by_source: dict, total: int, filtered: int) -> str:
@@ -167,14 +250,26 @@ def build_email_html(articles_by_source: dict, total: int, filtered: int) -> str
     </html>"""
 
 
-def send_email(html_content: str, total_articles: int):
+def send_email(html_content: str, total_articles: int, analysis_pack: str = ""):
     receivers = [r.strip() for r in EMAIL_RECEIVERS.split(",") if r.strip()]
 
-    msg            = MIMEMultipart("alternative")
+    msg            = MIMEMultipart("mixed")
     msg["Subject"] = f"📡 Signal-Source 週報 — {datetime.now().strftime('%Y/%m/%d')} ({total_articles} 篇精選)"
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(receivers)
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+    # HTML 包在 alternative 子結構裡（標準 mixed + alternative 巢狀）
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html_content, "html", "utf-8"))
+    msg.attach(alt)
+
+    if analysis_pack:
+        filename    = f"analysis_pack_{datetime.now().strftime('%Y-%m-%d')}.md"
+        attachment  = MIMEBase("application", "octet-stream")
+        attachment.set_payload(analysis_pack.encode("utf-8"))
+        encoders.encode_base64(attachment)
+        attachment.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(attachment)
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
@@ -190,31 +285,21 @@ def run():
     print(f"📊 Pipeline Digest 開始 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*55}")
 
-    # 撈所有文章（用來顯示總數）
     all_articles      = get_recent_articles(days=DIGEST_DAYS)
-    # 只保留達到門檻的文章
     filtered_articles = get_recent_articles(days=DIGEST_DAYS, min_score=AI_SCORE_THRESHOLD)
+    pack_articles     = get_recent_articles(days=DIGEST_DAYS, min_score=FULL_CONTENT_SCORE_THRESHOLD)
 
     print(f"\n📦 本週收集：{len(all_articles)} 篇")
     print(f"✅ AI 評分 ≥ {AI_SCORE_THRESHOLD} 分：{len(filtered_articles)} 篇")
+    print(f"⭐ AI 評分 ≥ {FULL_CONTENT_SCORE_THRESHOLD} 分精選：{len(pack_articles)} 篇")
 
-    if not filtered_articles:
-        print("⚠️  沒有符合門檻的文章，請先執行 pipeline_collect.py 或降低 AI_SCORE_THRESHOLD")
+    if not pack_articles:
+        print("⚠️  沒有符合精選門檻的文章，請先執行 pipeline_collect.py 或降低 FULL_CONTENT_SCORE_THRESHOLD")
         return
 
-    # 按源頭分組
-    by_source = defaultdict(list)
-    for article in filtered_articles:
-        by_source[article["source_type"]].append(article)
-
-    # 顯示各源頭文章數
-    print()
-    for source, articles in by_source.items():
-        meta = SOURCE_META.get(source, {})
-        print(f"   {meta.get('icon','📰')} {meta.get('label', source)}: {len(articles)} 篇")
-
-    html = build_email_html(dict(by_source), len(filtered_articles), len(all_articles))
-    send_email(html, len(filtered_articles))
+    pack = build_analysis_pack()
+    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles))
+    send_email(html, len(pack_articles), analysis_pack=pack)
 
     print(f"\n🎉 Pipeline Digest 完成！")
 
