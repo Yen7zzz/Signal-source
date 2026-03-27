@@ -1,18 +1,19 @@
 # ============================================================
-# pipeline_collect.py — 每天執行：抓資料 → 抓全文 → AI 評分 → 存 DB
+# pipeline_collect.py — 每天執行：抓資料 → AI 評分 → 存 DB → 高分才抓全文
 #
-# 對應 Signal-Flow 的 pipeline_a.py
-# 新增流程：
-#   scraper 抓標題+摘要
-#   → content_fetcher 用 Jina AI 抓完整內文
-#   → scorer 用 Groq 評分（1-10）+ 一句話重點
-#   → 存入資料庫
+# 流程（省 token 設計）：
+#   scraper 抓標題+摘要 → 存 DB
+#   → Groq 評分（只送 title+summary，~600 tokens/篇）
+#   → update DB ai_score
+#   → ai_score >= FULL_CONTENT_SCORE_THRESHOLD 的文章才用 Jina 抓全文
+#   → update DB full_content
 # ============================================================
 
 import logging
 import os
 from datetime import datetime
 from database import init_db, save_article, article_exists, update_article_ai, save_tw_revenue
+from config import FULL_CONTENT_SCORE_THRESHOLD
 from scraper import (
     fetch_semianalysis,
     fetch_trendforce,
@@ -80,38 +81,58 @@ def run():
             if not new_articles:
                 continue
 
-            if not skip_ai:
-                # Step 1：Jina AI 抓完整內文
-                print(f"\n   🌐 Jina AI 抓取完整內文...")
-                new_articles = batch_fetch(new_articles)
-
-                # Step 2：Groq 評分
-                print(f"\n   🤖 Groq AI 評分中...")
-                new_articles = batch_score(new_articles)
-
-            # Step 3：存入資料庫
             saved = 0
-            for article in new_articles:
-                # 月營收：先抽出結構化欄位（_*），再存 articles 表
-                revenue_meta = None
-                if article.get("source_type") == "tw_revenue":
-                    revenue_meta = {
-                        k[1:]: article.pop(k)   # 去掉前綴底線
-                        for k in ["_stock_name", "_year", "_month",
-                                  "_revenue", "_yoy_pct", "_mom_pct"]
-                    }
 
-                success = save_article(**article)
-                if success:
-                    saved += 1
-                    total_new += 1
+            if skip_ai:
+                # 台股月營收：直接存入 DB，不做評分或全文抓取
+                for article in new_articles:
+                    revenue_meta = None
+                    if article.get("source_type") == "tw_revenue":
+                        revenue_meta = {
+                            k[1:]: article.pop(k)   # 去掉前綴底線
+                            for k in ["_stock_name", "_year", "_month",
+                                      "_revenue", "_yoy_pct", "_mom_pct"]
+                        }
 
-                # 同時存結構化資料表（INSERT OR IGNORE，不怕重跑）
-                if revenue_meta:
-                    save_tw_revenue(
-                        stock_id=article["ticker"],
-                        **revenue_meta,
-                    )
+                    success = save_article(**article)
+                    if success:
+                        saved += 1
+                        total_new += 1
+
+                    if revenue_meta:
+                        save_tw_revenue(
+                            stock_id=article["ticker"],
+                            **revenue_meta,
+                        )
+            else:
+                # Step 1：先存入 DB（ai_score=NULL，full_content 空白）
+                for article in new_articles:
+                    success = save_article(**article)
+                    if success:
+                        saved += 1
+                        total_new += 1
+
+                # Step 2：Groq 評分（只送 title+summary）
+                print(f"\n   🤖 Groq AI 評分中...")
+                scored = batch_score(new_articles)
+
+                # Step 3：將評分寫回 DB
+                for article in scored:
+                    update_article_ai(article["url"], article["ai_score"], article["ai_summary"])
+
+                # Step 4：只有高分文章才用 Jina 抓全文
+                high_score = [a for a in scored if a.get("ai_score", 0) >= FULL_CONTENT_SCORE_THRESHOLD]
+                if high_score:
+                    print(f"\n   🌐 Jina AI 抓取高分文章全文（{len(high_score)}/{len(scored)} 篇）...")
+                    fetched = batch_fetch(high_score)
+                    for article in fetched:
+                        if article.get("full_content"):
+                            update_article_ai(
+                                article["url"],
+                                article["ai_score"],
+                                article["ai_summary"],
+                                article["full_content"],
+                            )
 
             print(f"\n   ✅ 新增 {saved} 篇進資料庫")
 

@@ -20,6 +20,9 @@ GROQ_MODEL    = "llama-3.3-70b-versatile"
 # 評分門檻：低於此分數的文章不會出現在週報中
 AI_SCORE_THRESHOLD = 6
 
+# 全文抓取門檻：ai_score >= 此值才用 Jina AI 抓完整內文
+FULL_CONTENT_SCORE_THRESHOLD = 7
+
 # ── Email 設定 ────────────────────────────────────────────────
 EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")
 EMAIL_PASSWORD  = os.environ.get("EMAIL_PASSWORD", "")       # Gmail App Password

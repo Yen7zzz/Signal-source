@@ -8,7 +8,7 @@
 #    1-3 分：與追蹤主題關聯性低
 #
 # 設計原則：
-#   用 summary 或 full_content 來評分（優先用 full_content）
+#   只用 title + summary 評分（省 token；全文由 pipeline 在高分後才抓）
 #   評分失敗時給預設分數 5（不讓文章消失，只是降低優先度）
 #   批次處理，每篇之間不需要等（Groq 速度夠快）
 # ============================================================
@@ -26,14 +26,11 @@ DEFAULT_SCORE_ON_FAILURE = 5
 
 def _build_prompt(article: dict) -> str:
     """
-    組裝評分 Prompt
-
-    優先用 full_content（Jina 抓回的完整內文）
-    若沒有 full_content，退回用 summary
+    組裝評分 Prompt，只用 title + summary（全文由 pipeline 在高分後才抓）
     """
     title   = article.get("title", "")
     source  = article.get("source", "")
-    content = article.get("full_content", "") or article.get("summary", "")
+    content = article.get("summary", "")
 
     return f"""你是一位專業的半導體產業分析師。
 請評估以下文章對「半導體供需結構、記憶體（HBM/DRAM/NAND）、AI 晶片、先進封裝（CoWoS）、資本支出（CapEx）」的情報價值。
@@ -97,10 +94,10 @@ def score_article(client: Groq, article: dict) -> tuple[int, str]:
 
 def batch_score(articles: list[dict]) -> list[dict]:
     """
-    批次對一批文章評分
+    批次對一批文章評分（只用 title + summary）
 
     Args:
-        articles: 已含 full_content 的文章清單
+        articles: 文章清單（含 title、summary 即可）
 
     Returns:
         同一份清單，每筆新增 ai_score 和 ai_summary 欄位
