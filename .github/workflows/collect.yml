@@ -14,6 +14,7 @@ jobs:
 
     env:
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
 
     steps:
       - name: 拉取程式碼和資料庫

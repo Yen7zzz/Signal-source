@@ -23,6 +23,8 @@ from config import (
     WATCHLIST,
     SEC_FILING_TYPES, SEC_USER_AGENT,
     MAX_ARTICLES_PER_SOURCE,
+    SEMI_ENGINEERING_RSS, EETIMES_RSS, TOMS_HARDWARE_RSS,
+    SERVE_THE_HOME_RSS, NEXT_PLATFORM_RSS, FABRICATED_KNOWLEDGE_RSS,
 )
 
 logger = logging.getLogger(__name__)
@@ -407,3 +409,114 @@ def fetch_seeking_alpha() -> list[dict]:
     # 總量上限
     logger.info(f"Seeking Alpha: {len(articles)} 篇（個股 RSS）")
     return articles[:MAX_ARTICLES_PER_SOURCE]
+
+
+# ── 6–11. 半導體 / 技術媒體 RSS ──────────────────────────────
+
+def _fetch_rss(
+    rss_url: str,
+    source_type: str,
+    source_label: str,
+    filter_keywords: bool = False,
+) -> list[dict]:
+    """
+    通用 RSS fetcher，供下方 6 個媒體源共用。
+
+    Args:
+        rss_url:          RSS 網址
+        source_type:      articles 表的 source_type 欄位值
+        source_label:     顯示用的來源名稱
+        filter_keywords:  True → 用 _is_relevant() 過濾非半導體內容
+    """
+    articles = []
+    try:
+        feed = feedparser.parse(rss_url)
+        for entry in feed.entries:
+            title   = entry.get("title", "").strip()
+            url     = entry.get("link", "").strip()
+            summary = _clean_html(entry.get("summary", ""))
+
+            if not title or not url:
+                continue
+
+            if filter_keywords and not _is_relevant(title + " " + summary):
+                continue
+
+            articles.append({
+                "source_type": source_type,
+                "title":       title,
+                "url":         url,
+                "summary":     summary,
+                "source":      source_label,
+                "published":   entry.get("published", ""),
+                "ticker":      "",
+                "filing_type": "",
+            })
+
+            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
+                break
+
+        logger.info(f"{source_label}: {len(articles)} 篇")
+    except Exception as e:
+        logger.error(f"{source_label} 失敗: {e}")
+    return articles
+
+
+def fetch_semi_engineering() -> list[dict]:
+    """Semiconductor Engineering — 混合站，需關鍵字過濾"""
+    return _fetch_rss(
+        SEMI_ENGINEERING_RSS,
+        source_type="semi_engineering",
+        source_label="Semiconductor Engineering",
+        filter_keywords=True,
+    )
+
+
+def fetch_eetimes() -> list[dict]:
+    """EE Times — 混合站，需關鍵字過濾"""
+    return _fetch_rss(
+        EETIMES_RSS,
+        source_type="eetimes",
+        source_label="EE Times",
+        filter_keywords=True,
+    )
+
+
+def fetch_toms_hardware() -> list[dict]:
+    """Tom's Hardware — 混合站（含消費電子），需關鍵字過濾"""
+    return _fetch_rss(
+        TOMS_HARDWARE_RSS,
+        source_type="toms_hardware",
+        source_label="Tom's Hardware",
+        filter_keywords=True,
+    )
+
+
+def fetch_serve_the_home() -> list[dict]:
+    """ServeTheHome — 聚焦伺服器 / 資料中心，不需過濾"""
+    return _fetch_rss(
+        SERVE_THE_HOME_RSS,
+        source_type="serve_the_home",
+        source_label="ServeTheHome",
+        filter_keywords=False,
+    )
+
+
+def fetch_next_platform() -> list[dict]:
+    """Next Platform — 聚焦 HPC / 資料中心，不需過濾"""
+    return _fetch_rss(
+        NEXT_PLATFORM_RSS,
+        source_type="next_platform",
+        source_label="Next Platform",
+        filter_keywords=False,
+    )
+
+
+def fetch_fabricated_knowledge() -> list[dict]:
+    """Fabricated Knowledge — 聚焦半導體供應鏈，不需過濾"""
+    return _fetch_rss(
+        FABRICATED_KNOWLEDGE_RSS,
+        source_type="fabricated_knowledge",
+        source_label="Fabricated Knowledge",
+        filter_keywords=False,
+    )

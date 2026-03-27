@@ -18,8 +18,8 @@ GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL    = "llama-3.3-70b-versatile"
 
 # 評分門檻：低於此分數的文章不會出現在週報中
-# 建議先用 6 跑幾週，觀察結果後再調整
-AI_SCORE_THRESHOLD = 6
+# 暫時調為 5，待 Groq 真正跑起來後根據實際分佈調整
+AI_SCORE_THRESHOLD = 5
 
 # ── Email 設定 ────────────────────────────────────────────────
 EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")
@@ -86,6 +86,17 @@ WATCHLIST = {
 # SemiAnalysis — Substack 公開 RSS
 # 只有免費文章，付費文章需手動餵入（見 README）
 SEMIANALYSIS_RSS = "https://www.semianalysis.com/feed"
+
+# ── 半導體 / 技術媒體 RSS（新增）─────────────────────────────
+# 需要關鍵字過濾（混合內容站）
+SEMI_ENGINEERING_RSS   = "https://semiengineering.com/feed/"
+EETIMES_RSS            = "https://www.eetimes.com/feed/"
+TOMS_HARDWARE_RSS      = "https://www.tomshardware.com/feeds/all"
+
+# 聚焦站，不需過濾
+SERVE_THE_HOME_RSS     = "https://www.servethehome.com/feed/"
+NEXT_PLATFORM_RSS      = "https://www.nextplatform.com/feed/"
+FABRICATED_KNOWLEDGE_RSS = "https://www.fabricatedknowledge.com/feed"
 
 # TrendForce — 公開新聞頁面（爬蟲）
 TRENDFORCE_NEWS_URL = "https://www.trendforce.com/news/"

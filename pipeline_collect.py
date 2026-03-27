@@ -18,6 +18,12 @@ from scraper import (
     fetch_trendforce,
     fetch_digitimes,
     fetch_sec_edgar,
+    fetch_semi_engineering,
+    fetch_eetimes,
+    fetch_toms_hardware,
+    fetch_serve_the_home,
+    fetch_next_platform,
+    fetch_fabricated_knowledge,
 )
 from scraper_twstock import fetch_tw_revenue_all
 from content_fetcher import batch_fetch
@@ -42,11 +48,17 @@ def run():
     # 所有資料源統一在這裡定義
     # 第三欄 skip_ai：True 表示跳過 Jina + Groq（月營收已自行計算分數）
     sources = [
-        ("SemiAnalysis",  fetch_semianalysis,   False),
-        ("TrendForce",    fetch_trendforce,      False),
-        ("DIGITIMES",     fetch_digitimes,       False),
-        ("SEC EDGAR",     fetch_sec_edgar,       False),
-        ("台股月營收",    fetch_tw_revenue_all,  True),
+        ("SemiAnalysis",           fetch_semianalysis,          False),
+        ("TrendForce",             fetch_trendforce,             False),
+        ("DIGITIMES",              fetch_digitimes,              False),
+        ("SEC EDGAR",              fetch_sec_edgar,              False),
+        ("Semiconductor Eng.",     fetch_semi_engineering,       False),
+        ("EE Times",               fetch_eetimes,                False),
+        ("Tom's Hardware",         fetch_toms_hardware,          False),
+        ("ServeTheHome",           fetch_serve_the_home,         False),
+        ("Next Platform",          fetch_next_platform,          False),
+        ("Fabricated Knowledge",   fetch_fabricated_knowledge,   False),
+        ("台股月營收",             fetch_tw_revenue_all,         True),
     ]
 
     total_fetched = 0
