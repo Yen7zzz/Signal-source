@@ -13,8 +13,6 @@ import logging
 import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from datetime import datetime
 from collections import defaultdict
 from database import get_recent_articles
@@ -152,10 +150,20 @@ def build_article_html(article: dict) -> str:
     </div>"""
 
 
-def build_digest_html(total_collected: int, total_threshold: int, total_pack: int) -> str:
-    """精簡版 Email HTML：只顯示統計漏斗，正文詳見附件"""
+def build_digest_html(total_collected: int, total_threshold: int, total_pack: int, analysis_pack: str = "") -> str:
+    """精簡版 Email HTML：顯示統計漏斗 + 內嵌 analysis_pack"""
     date_str = datetime.now().strftime("%Y 年 %m 月 %d 日")
-    filename = f"analysis_pack_{datetime.now().strftime('%Y-%m-%d')}.md"
+
+    pack_section = ""
+    if analysis_pack:
+        import html as html_module
+        escaped = html_module.escape(analysis_pack)
+        pack_section = f"""
+        <h2 style="font-size:18px;color:#111827;border-bottom:2px solid #6366f1;padding-bottom:8px;margin:32px 0 16px;">
+            📎 Analysis Pack
+        </h2>
+        <pre style="white-space:pre-wrap;font-size:13px;line-height:1.6;color:#374151;background:#f9fafb;padding:16px;border-radius:8px;overflow-x:auto;">{escaped}</pre>"""
+
     return f"""
     <html>
     <head><meta charset="UTF-8"></head>
@@ -171,11 +179,7 @@ def build_digest_html(total_collected: int, total_threshold: int, total_pack: in
             </p>
         </div>
 
-        <div style="padding:20px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;text-align:center;">
-            <p style="margin:0;font-size:15px;color:#0369a1;">
-                詳細情報請見附件 <strong>{filename}</strong>
-            </p>
-        </div>
+        {pack_section}
 
         <div style="text-align:center;padding:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;margin-top:32px;">
             Signal-Source 自動生成 · AI 評分由 Groq 提供
@@ -250,26 +254,15 @@ def build_email_html(articles_by_source: dict, total: int, filtered: int) -> str
     </html>"""
 
 
-def send_email(html_content: str, total_articles: int, analysis_pack: str = ""):
+def send_email(html_content: str, total_articles: int):
     receivers = [r.strip() for r in EMAIL_RECEIVERS.split(",") if r.strip()]
 
-    msg            = MIMEMultipart("mixed")
+    msg            = MIMEMultipart("alternative")
     msg["Subject"] = f"📡 Signal-Source 週報 — {datetime.now().strftime('%Y/%m/%d')} ({total_articles} 篇精選)"
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(receivers)
 
-    # HTML 包在 alternative 子結構裡（標準 mixed + alternative 巢狀）
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(html_content, "html", "utf-8"))
-    msg.attach(alt)
-
-    if analysis_pack:
-        filename    = f"analysis_pack_{datetime.now().strftime('%Y-%m-%d')}.md"
-        attachment  = MIMEBase("application", "octet-stream")
-        attachment.set_payload(analysis_pack.encode("utf-8"))
-        encoders.encode_base64(attachment)
-        attachment.add_header("Content-Disposition", "attachment", filename=filename)
-        msg.attach(attachment)
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
@@ -298,8 +291,8 @@ def run():
         return
 
     pack = build_analysis_pack()
-    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles))
-    send_email(html, len(pack_articles), analysis_pack=pack)
+    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles), analysis_pack=pack)
+    send_email(html, len(pack_articles))
 
     print(f"\n🎉 Pipeline Digest 完成！")
 
