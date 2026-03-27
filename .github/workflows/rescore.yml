@@ -1,0 +1,44 @@
+name: 🔄 重新評分歷史文章
+
+on:
+  workflow_dispatch:    # 純手動觸發，不排程
+
+permissions:
+  contents: write       # 需要寫入權限，把重評後的 DB commit 回 repo
+
+jobs:
+  rescore:
+    runs-on: ubuntu-latest
+
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+    steps:
+      - name: 拉取程式碼和資料庫
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 建立必要資料夾
+        run: mkdir -p data logs
+
+      - name: 執行重新評分
+        run: python rescore_fallback.py
+
+      - name: 儲存資料庫回 GitHub
+        run: |
+          git config user.name "IndustryRadar Bot"
+          git config user.email "action@github.com"
+          git add -f data/industry_radar.db
+          git diff --staged --quiet || git commit -m "🔄 重新評分歷史文章 $(date '+%Y-%m-%d')"
+          git pull --rebase
+          git push

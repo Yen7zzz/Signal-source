@@ -18,8 +18,7 @@ GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL    = "llama-3.3-70b-versatile"
 
 # 評分門檻：低於此分數的文章不會出現在週報中
-# 暫時調為 5，待 Groq 真正跑起來後根據實際分佈調整
-AI_SCORE_THRESHOLD = 5
+AI_SCORE_THRESHOLD = 6
 
 # ── Email 設定 ────────────────────────────────────────────────
 EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")

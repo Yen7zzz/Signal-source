@@ -14,7 +14,7 @@ import requests
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from config import (
     SEMIANALYSIS_RSS,
@@ -255,16 +255,20 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
         accessions = recent.get("accessionNumber", [])
         company_name = company_info["name"]
 
+        cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+
         for form, date, accession in zip(forms, dates, accessions):
             if form not in SEC_FILING_TYPES:
                 continue
 
-            # ★ 改動：直接指向 filing index page（可讀性更好）
+            # 只保留最近 90 天的 filing
+            if date < cutoff:
+                continue
+
             accession_fmt = accession.replace("-", "")
             index_url = (
-                f"https://www.sec.gov/cgi-bin/browse-edgar?"
-                f"action=getcompany&CIK={cik_clean}"
-                f"&type={form}&dateb=&owner=include&count=5&search_text="
+                f"https://www.sec.gov/Archives/edgar/data/"
+                f"{cik_clean}/{accession_fmt}/{accession}-index.htm"
             )
 
             # ★ 改動：嘗試抓 8-K 的 Item 列表作為 summary
