@@ -277,12 +277,16 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
             # 8-K 過濾：只保留高價值 Item；fetch 失敗（空字串）視為不確定，保留
             if form == "8-K" and summary:
                 if not any(f"Item {item}" in summary for item in SEC_8K_VALUABLE_ITEMS):
+                    print(f"      ⏭️  跳過低價值 8-K：{company_name} {date} — {summary[:60]}")
                     continue
 
             if not summary:
                 # 10-Q 就用財報週期說明
                 quarter = _estimate_quarter(date)
                 summary = f"{company_name} {quarter} 季報，財務數據與 CapEx 指引"
+
+            if form == "8-K":
+                print(f"      ✅ 保留高價值 8-K：{company_name} {date} — {summary[:60]}")
 
             articles.append({
                 "source_type": "sec_edgar",
