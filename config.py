@@ -117,6 +117,12 @@ DIGITIMES_RSS = "https://www.digitimes.com/rss/daily.xml"
 #   10-Q → 季報（財務數據、CapEx）
 #   10-K → 年報
 SEC_FILING_TYPES = ["8-K", "10-Q"]
+
+# 8-K 高價值 Item 白名單：只有包含以下 Item 的 8-K 才會被收錄
+# 2.02 — Results of Operations（法說會 / 財報）
+# 7.01 — Regulation FD Disclosure（earnings press release）
+# 1.01 — Entry into Material Agreement（重大合約）
+SEC_8K_VALUABLE_ITEMS = ["2.02", "7.01", "1.01"]
 SEC_USER_AGENT   = os.environ.get("SEC_USER_AGENT", "IndustryRadar jason071491@gmail.com")
 # SEC EDGAR 要求 User-Agent 格式：「公司名稱 email」
 # 請把 GitHub Secret SEC_USER_AGENT 設為你的 email，例如：

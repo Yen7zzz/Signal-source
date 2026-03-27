@@ -21,7 +21,7 @@ from config import (
     TRENDFORCE_NEWS_URL, TRENDFORCE_KEYWORDS,
     DIGITIMES_RSS,
     WATCHLIST,
-    SEC_FILING_TYPES, SEC_USER_AGENT,
+    SEC_FILING_TYPES, SEC_USER_AGENT, SEC_8K_VALUABLE_ITEMS,
     MAX_ARTICLES_PER_SOURCE,
     SEMI_ENGINEERING_RSS, EETIMES_RSS, TOMS_HARDWARE_RSS,
     SERVE_THE_HOME_RSS, NEXT_PLATFORM_RSS, FABRICATED_KNOWLEDGE_RSS,
@@ -273,6 +273,12 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
 
             # ★ 改動：嘗試抓 8-K 的 Item 列表作為 summary
             summary = _get_8k_items(accession, cik_clean, sec_headers) if form == "8-K" else ""
+
+            # 8-K 過濾：只保留高價值 Item；fetch 失敗（空字串）視為不確定，保留
+            if form == "8-K" and summary:
+                if not any(f"Item {item}" in summary for item in SEC_8K_VALUABLE_ITEMS):
+                    continue
+
             if not summary:
                 # 10-Q 就用財報週期說明
                 quarter = _estimate_quarter(date)
