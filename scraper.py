@@ -276,7 +276,6 @@ def _get_sec_filings(ticker: str, company_info: dict) -> list[dict]:
             # items_str 為空表示 JSON 沒有資料，視為不確定，保留
             if form == "8-K":
                 if items_str and not any(item in items_str for item in SEC_8K_VALUABLE_ITEMS):
-                    print(f"      ⏭️  跳過低價值 8-K：{company_name} {date} — Items: {items_str}")
                     continue
 
             # summary：8-K 用 items 字串，10-Q 用財報週期說明
