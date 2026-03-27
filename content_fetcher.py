@@ -14,6 +14,7 @@
 #   - 失敗時回傳空字串，不中斷主流程
 # ============================================================
 
+import re
 import requests
 import logging
 import time
@@ -33,6 +34,59 @@ JINA_DELAY_SECONDS = 2
 
 # 抓回來的內文最多保留幾個字（太長 Groq 會超出 context window）
 MAX_CONTENT_LENGTH = 3000
+
+
+_JINA_META_RE   = re.compile(r'^(Title|URL Source|Published Time|Markdown Content):.*$', re.MULTILINE)
+_NAV_LINK_RE    = re.compile(r'^\s*\[.+?\]\(.+?\)\s*$')
+_BULLET_LINK_RE = re.compile(r'^\s*\*\s*\[.+?\]\(.+?\)\s*$')  # * [text](url) 純 bullet 連結
+_MULTI_LINK_RE  = re.compile(r'\[.*?\]\(.*?\)')                # 用於計算行內連結數
+_IMAGE_RE       = re.compile(r'!\[.*?\]\(.*?\)')
+_NOISE_KEYWORDS = re.compile(
+    r'Advertisement|SUBSCRIBE|Sign in|My account|Skip to main content'
+    r'|Trending Issues|AspenCore|MULTIMEDIA|EVENT\+',
+    re.IGNORECASE,
+)
+
+
+def _clean_jina_content(raw: str) -> str:
+    # 1. Jina meta header
+    text = _JINA_META_RE.sub('', raw)
+
+    # 2. 導航列：連續 ≥3 行純連結的區塊整段移除
+    lines  = text.splitlines()
+    result = []
+    buffer = []  # 累積連續純連結行
+    for line in lines:
+        if _NAV_LINK_RE.match(line):
+            buffer.append(line)
+        else:
+            if len(buffer) < 3:
+                result.extend(buffer)
+            buffer = []
+            result.append(line)
+    if len(buffer) < 3:
+        result.extend(buffer)
+
+    # 3 & 4. 廣告關鍵字 + bullet 連結 + 多連結行 + 圖片 markdown
+    cleaned = []
+    for line in result:
+        if _NOISE_KEYWORDS.search(line):
+            continue
+        if _BULLET_LINK_RE.match(line):
+            continue
+        if len(_MULTI_LINK_RE.findall(line)) >= 3:
+            continue
+        cleaned.append(_IMAGE_RE.sub('', line))
+
+    text = '\n'.join(cleaned)
+
+    # 5. 連續空行壓縮
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+
+    # 6. 清理後內容不足 50 字視為無效
+    if len(text) < 50:
+        return ''
+    return text
 
 
 def _fetch_sec_content(url: str) -> str:
@@ -90,7 +144,7 @@ def fetch_full_content(url: str) -> str:
         resp = requests.get(jina_url, headers=JINA_HEADERS, timeout=20)
         resp.raise_for_status()
 
-        content = resp.text.strip()
+        content = _clean_jina_content(resp.text.strip())
 
         # 如果內容太短，可能是被擋了（登入頁、錯誤頁）
         if len(content) < 100:
