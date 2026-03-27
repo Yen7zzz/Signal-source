@@ -36,9 +36,10 @@ SOURCE_META = {
     "trendforce":    {"label": "TrendForce",           "icon": "📊", "color": "#0ea5e9"},
     "digitimes":     {"label": "DIGITIMES",            "icon": "📡", "color": "#10b981"},
     "sec_edgar":     {"label": "SEC EDGAR 法說會/季報", "icon": "📋", "color": "#f59e0b"},
+    "tw_revenue":    {"label": "台股月營收",            "icon": "🇹🇼", "color": "#e11d48"},
 }
 
-SOURCE_ORDER = ["sec_edgar", "semianalysis", "trendforce", "digitimes"]
+SOURCE_ORDER = ["sec_edgar", "tw_revenue", "semianalysis", "trendforce", "digitimes"]
 
 
 def _score_bar(score: int) -> str:

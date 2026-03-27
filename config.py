@@ -31,6 +31,16 @@ SMTP_PORT       = 587
 # ── 資料庫 ────────────────────────────────────────────────────
 DB_PATH = "data/industry_radar.db"
 
+# ── 台股月營收追蹤名單 ────────────────────────────────────────
+# 來源：FinMind API（免費，不需 Token）
+# 格式：股票代號 → 公司名稱
+TW_WATCHLIST = {
+    "2330": "台積電",
+    "3711": "日月光投控",
+    "2408": "南亞科",
+    "3037": "欣興",
+}
+
 # ── 追蹤公司名單 ──────────────────────────────────────────────
 # 新增公司步驟：
 # 1. 去 https://www.sec.gov/cgi-bin/browse-edgar 搜尋公司名
@@ -44,6 +54,9 @@ WATCHLIST = {
     "NVDA": {"name": "NVIDIA",           "sec_cik": "0001045810"},
     "AMD":  {"name": "AMD",              "sec_cik": "0000002488"},
     "INTC": {"name": "Intel",            "sec_cik": "0000050863"},
+    "AVGO": {"name": "Broadcom",         "sec_cik": "0001649338"},
+    "QCOM": {"name": "Qualcomm",         "sec_cik": "0000804328"},
+    "MRVL": {"name": "Marvell Technology","sec_cik": "0001058057"},
 
     # ── 記憶體 ───────────────────────────────────────────────
     "MU":   {"name": "Micron",           "sec_cik": "0000723125"},
@@ -51,6 +64,17 @@ WATCHLIST = {
     # ── 晶圓代工 / 封裝 ──────────────────────────────────────
     "TSM":  {"name": "TSMC",             "sec_cik": "0001046179"},
     "ASX":  {"name": "ASE Technology",   "sec_cik": "0001060349"},
+
+    # ── 需求端（Hyperscaler / AI CapEx 驅動）────────────────
+    "MSFT": {"name": "Microsoft",        "sec_cik": "0000789019"},
+    "GOOGL":{"name": "Alphabet",         "sec_cik": "0001652044"},
+    "AMZN": {"name": "Amazon",           "sec_cik": "0001018724"},
+    "META": {"name": "Meta Platforms",   "sec_cik": "0001326801"},
+
+    # ── 設備端（半導體設備 / CapEx leading indicator）────────
+    "ASML": {"name": "ASML Holding",     "sec_cik": "0000937966"},
+    "AMAT": {"name": "Applied Materials","sec_cik": "0000006951"},
+    "LRCX": {"name": "Lam Research",     "sec_cik": "0000707549"},
 
     # ── 亞洲廠商（無 SEC，靠 TrendForce / SemiAnalysis 追蹤）─
     "000660.KS": {"name": "SK Hynix",    "sec_cik": ""},

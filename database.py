@@ -70,6 +70,22 @@ def init_db():
         except sqlite3.OperationalError:
             pass  # 欄位已存在，忽略
 
+    # 台股月營收獨立資料表（結構化數據，供未來趨勢分析用）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tw_monthly_revenue (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_id     TEXT NOT NULL,
+            stock_name   TEXT NOT NULL,
+            year         INTEGER NOT NULL,
+            month        INTEGER NOT NULL,
+            revenue      INTEGER NOT NULL,
+            yoy_pct      REAL,
+            mom_pct      REAL,
+            created_at   TEXT DEFAULT (datetime('now')),
+            UNIQUE(stock_id, year, month)
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("資料庫初始化完成")
@@ -148,6 +164,43 @@ def update_article_ai(url: str, ai_score: int, ai_summary: str, full_content: st
         conn.close()
     except Exception as e:
         logger.error(f"更新 AI 評分失敗：{e} | URL: {url}")
+
+
+def tw_revenue_exists(stock_id: str, year: int, month: int) -> bool:
+    """去重：該月份的月營收是否已存在於結構化資料表"""
+    conn = get_connection()
+    row  = conn.execute(
+        "SELECT 1 FROM tw_monthly_revenue WHERE stock_id = ? AND year = ? AND month = ?",
+        (stock_id, year, month)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def save_tw_revenue(
+    stock_id:   str,
+    stock_name: str,
+    year:       int,
+    month:      int,
+    revenue:    int,
+    yoy_pct:    float = None,
+    mom_pct:    float = None,
+) -> bool:
+    """儲存月營收結構化數據到 tw_monthly_revenue 表（重複會被忽略）"""
+    try:
+        conn = get_connection()
+        conn.execute("""
+            INSERT OR IGNORE INTO tw_monthly_revenue
+                (stock_id, stock_name, year, month, revenue, yoy_pct, mom_pct)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (stock_id, stock_name, year, month, revenue, yoy_pct, mom_pct))
+        affected = conn.total_changes
+        conn.commit()
+        conn.close()
+        return affected > 0
+    except Exception as e:
+        logger.error(f"儲存月營收失敗：{e} | {stock_id} {year}/{month}")
+        return False
 
 
 def get_recent_articles(days: int = 7, min_score: int = None) -> list[dict]:

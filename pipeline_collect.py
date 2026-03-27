@@ -12,13 +12,14 @@
 import logging
 import os
 from datetime import datetime
-from database import init_db, save_article, article_exists, update_article_ai
+from database import init_db, save_article, article_exists, update_article_ai, save_tw_revenue
 from scraper import (
     fetch_semianalysis,
     fetch_trendforce,
     fetch_digitimes,
     fetch_sec_edgar,
 )
+from scraper_twstock import fetch_tw_revenue_all
 from content_fetcher import batch_fetch
 from scorer import batch_score
 
@@ -39,17 +40,19 @@ def run():
     init_db()
 
     # 所有資料源統一在這裡定義
+    # 第三欄 skip_ai：True 表示跳過 Jina + Groq（月營收已自行計算分數）
     sources = [
-        ("SemiAnalysis",  fetch_semianalysis),
-        ("TrendForce",    fetch_trendforce),
-        ("DIGITIMES",     fetch_digitimes),
-        ("SEC EDGAR",     fetch_sec_edgar),
+        ("SemiAnalysis",  fetch_semianalysis,   False),
+        ("TrendForce",    fetch_trendforce,      False),
+        ("DIGITIMES",     fetch_digitimes,       False),
+        ("SEC EDGAR",     fetch_sec_edgar,       False),
+        ("台股月營收",    fetch_tw_revenue_all,  True),
     ]
 
     total_fetched = 0
     total_new     = 0
 
-    for source_name, fetch_fn in sources:
+    for source_name, fetch_fn, skip_ai in sources:
         print(f"\n{'─'*40}")
         print(f"📥 抓取 {source_name}...")
 
@@ -65,21 +68,38 @@ def run():
             if not new_articles:
                 continue
 
-            # Step 1：Jina AI 抓完整內文
-            print(f"\n   🌐 Jina AI 抓取完整內文...")
-            new_articles = batch_fetch(new_articles)
+            if not skip_ai:
+                # Step 1：Jina AI 抓完整內文
+                print(f"\n   🌐 Jina AI 抓取完整內文...")
+                new_articles = batch_fetch(new_articles)
 
-            # Step 2：Groq 評分
-            print(f"\n   🤖 Groq AI 評分中...")
-            new_articles = batch_score(new_articles)
+                # Step 2：Groq 評分
+                print(f"\n   🤖 Groq AI 評分中...")
+                new_articles = batch_score(new_articles)
 
             # Step 3：存入資料庫
             saved = 0
             for article in new_articles:
+                # 月營收：先抽出結構化欄位（_*），再存 articles 表
+                revenue_meta = None
+                if article.get("source_type") == "tw_revenue":
+                    revenue_meta = {
+                        k[1:]: article.pop(k)   # 去掉前綴底線
+                        for k in ["_stock_name", "_year", "_month",
+                                  "_revenue", "_yoy_pct", "_mom_pct"]
+                    }
+
                 success = save_article(**article)
                 if success:
                     saved += 1
                     total_new += 1
+
+                # 同時存結構化資料表（INSERT OR IGNORE，不怕重跑）
+                if revenue_meta:
+                    save_tw_revenue(
+                        stock_id=article["ticker"],
+                        **revenue_meta,
+                    )
 
             print(f"\n   ✅ 新增 {saved} 篇進資料庫")
 
