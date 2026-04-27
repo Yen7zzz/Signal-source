@@ -59,9 +59,10 @@ def init_db():
     # 若是從舊版升級（資料表已存在但缺少新欄位），補上新欄位
     # SQLite 的 ALTER TABLE 不支援 IF NOT EXISTS，用 try/except 處理
     new_columns = [
-        ("full_content", "TEXT"),
-        ("ai_score",     "INTEGER"),
-        ("ai_summary",   "TEXT"),
+        ("full_content",          "TEXT"),
+        ("ai_score",              "INTEGER"),
+        ("ai_summary",            "TEXT"),
+        ("content_completeness",  "TEXT"),
     ]
     for col_name, col_type in new_columns:
         try:
@@ -148,6 +149,20 @@ def save_article(
         return False
 
 
+def update_content_completeness(url: str, status: str):
+    """更新單篇文章的 content_completeness 欄位（full / partial / headline_only）"""
+    try:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE articles SET content_completeness = ? WHERE url = ?",
+            (status, url),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"更新 content_completeness 失敗：{e} | URL: {url}")
+
+
 def update_article_ai(url: str, ai_score: int, ai_summary: str, full_content: str = ""):
     """
     更新單篇文章的 AI 評分和摘要
@@ -201,6 +216,17 @@ def save_tw_revenue(
     except Exception as e:
         logger.error(f"儲存月營收失敗：{e} | {stock_id} {year}/{month}")
         return False
+
+
+def get_recent_titles(days: int = 7) -> list[str]:
+    """撈取最近 N 天的文章標題，供跨天標題去重使用"""
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT title FROM articles WHERE created_at >= ?", (since,)
+    ).fetchall()
+    conn.close()
+    return [row["title"] for row in rows if row["title"]]
 
 
 def get_recent_articles(days: int = 7, min_score: int = None) -> list[dict]:

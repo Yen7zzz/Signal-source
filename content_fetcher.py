@@ -42,20 +42,141 @@ _BULLET_LINK_RE = re.compile(r'^\s*\*\s*\[.+?\]\(.+?\)\s*$')  # * [text](url) �
 _MULTI_LINK_RE  = re.compile(r'\[.*?\]\(.*?\)')                # 用於計算行內連結數
 _IMAGE_RE       = re.compile(r'!\[.*?\]\(.*?\)')
 _NOISE_KEYWORDS = re.compile(
-    r'Advertisement|SUBSCRIBE|Sign in|My account|Skip to main content'
-    r'|Trending Issues|AspenCore|MULTIMEDIA|EVENT\+',
+    r'Advertisement|\s+AD\b|SUBSCRIBE|Sign in|My account|Skip to main content'
+    r'|Trending Issues|AspenCore|MULTIMEDIA|EVENT\+'
+    # Footer / site chrome
+    r'|Share this article|Related stories|Popular Keywords'
+    r'|Member Center|SIGN OUT|NEXTPLATFORM AD|cnv\.asp',
     re.IGNORECASE,
 )
+# Footer labels that appear as standalone lines ("Categories", "Tags", "Companies")
+_FOOTER_EXACT_RE = re.compile(
+    r'^\s*(Categories|Tags|Companies)\s*$',
+    re.IGNORECASE,
+)
+# DIGITIMES realtime-news sidebar trigger
+_REALTIME_NEWS_RE = re.compile(r'REALTIME\s+NEWS', re.IGNORECASE)
+# Login / paywall form keywords
+_LOGIN_KW_RE = re.compile(
+    r'Email address|\bPassword\b|Keep me signed in|\bSign in\b'
+    r'|Create account|Enterprise first-time login|Forgot password',
+    re.IGNORECASE,
+)
+_INLINE_EMPTY_LINK_RE = re.compile(r'!?\[\]\([^)]*\)')  # [](url) 或 ![](url)
+_ANY_LINK_RE          = re.compile(r'\[.+?\]\(.+?\)')   # 行內是否含有連結（非空）
+
+
+def _paragraph_link_density_filter(lines: list[str]) -> list[str]:
+    """
+    段落級連結密度過濾：將行切成段落，
+    若段落有 ≥4 非空行且 >60% 含有 [text](url)，整段丟棄。
+    針對 EE Times 類型的 promo block（文字行 + 連結行交替）。
+    """
+    result   = []
+    paragraph = []
+
+    def _flush(para: list[str]) -> None:
+        non_empty = [l for l in para if l.strip()]
+        if len(non_empty) >= 4:
+            link_lines = sum(1 for l in non_empty if _ANY_LINK_RE.search(l))
+            if link_lines / len(non_empty) > 0.6:
+                return  # 高密度段落，整段捨棄
+        result.extend(para)
+
+    for line in lines:
+        if line.strip() == '':
+            _flush(paragraph)
+            paragraph = []
+            result.append(line)
+        else:
+            paragraph.append(line)
+    _flush(paragraph)
+    return result
+
+
+def _remove_realtime_news_blocks(lines: list[str]) -> list[str]:
+    """
+    Remove DIGITIMES "REALTIME NEWS" sidebar blocks.
+    From the trigger line, remove everything until 2+ consecutive empty lines
+    or a long paragraph (>100 chars), whichever comes first.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        if _REALTIME_NEWS_RE.search(lines[i]):
+            i += 1
+            consecutive_empty = 0
+            while i < len(lines):
+                stripped = lines[i].strip()
+                if not stripped:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        break
+                    i += 1
+                elif len(stripped) > 100:
+                    break
+                else:
+                    consecutive_empty = 0
+                    i += 1
+        else:
+            result.append(lines[i])
+            i += 1
+    return result
+
+
+def _remove_login_blocks(lines: list[str]) -> list[str]:
+    """
+    Remove login / paywall form blocks.
+    When 3+ login-keyword lines are found in a contiguous window (separated only by
+    blank lines or short non-keyword lines), the entire window is dropped.
+    A long paragraph (>100 chars) or 3+ consecutive non-keyword lines ends the window.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not _LOGIN_KW_RE.search(lines[i]):
+            result.append(lines[i])
+            i += 1
+            continue
+
+        j = i
+        login_count = 0
+        consecutive_non_login = 0
+        while j < len(lines):
+            stripped = lines[j].strip()
+            if _LOGIN_KW_RE.search(lines[j]):
+                login_count += 1
+                consecutive_non_login = 0
+                j += 1
+            elif not stripped:
+                j += 1  # blank lines don't break the window
+            elif len(stripped) > 100:
+                break   # real paragraph ends the window
+            else:
+                consecutive_non_login += 1
+                if consecutive_non_login >= 3:
+                    break
+                j += 1
+
+        if login_count >= 3:
+            i = j   # drop the block
+        else:
+            result.extend(lines[i:j])
+            i = j
+    return result
 
 
 def _clean_jina_content(raw: str) -> str:
+    # 0. inline 清除空 markdown 連結 [](url) / ![](url)
+    text = _INLINE_EMPTY_LINK_RE.sub('', raw)
+
     # 1. Jina meta header
-    text = _JINA_META_RE.sub('', raw)
+    text = _JINA_META_RE.sub('', text)
 
     # 2. 導航列：連續 ≥3 行純連結的區塊整段移除
     lines  = text.splitlines()
     result = []
-    buffer = []  # 累積連續純連結行
+    buffer = []
     for line in lines:
         if _NAV_LINK_RE.match(line):
             buffer.append(line)
@@ -67,10 +188,21 @@ def _clean_jina_content(raw: str) -> str:
     if len(buffer) < 3:
         result.extend(buffer)
 
-    # 3 & 4. 廣告關鍵字 + bullet 連結 + 多連結行 + 圖片 markdown
+    # 2b. 段落級連結密度過濾（EE Times 類型 promo block）
+    result = _paragraph_link_density_filter(result)
+
+    # 3. DIGITIMES REALTIME NEWS 側邊欄整段移除
+    result = _remove_realtime_news_blocks(result)
+
+    # 4. 登入 / 付費牆表單整段移除
+    result = _remove_login_blocks(result)
+
+    # 5. 廣告/噪訊關鍵字 + 頁尾 label + bullet 連結 + 多連結行 + 圖片 markdown
     cleaned = []
     for line in result:
         if _NOISE_KEYWORDS.search(line):
+            continue
+        if _FOOTER_EXACT_RE.match(line):
             continue
         if _BULLET_LINK_RE.match(line):
             continue
@@ -80,13 +212,28 @@ def _clean_jina_content(raw: str) -> str:
 
     text = '\n'.join(cleaned)
 
-    # 5. 連續空行壓縮
+    # 6. 連續空行壓縮
     text = re.sub(r'\n{3,}', '\n\n', text).strip()
 
-    # 6. 清理後內容不足 50 字視為無效
+    # 7. 清理後內容不足 50 字視為無效
     if len(text) < 50:
         return ''
     return text
+
+
+def classify_completeness(full_content: str, summary: str = "") -> str:
+    """
+    Classify how complete an article's content is.
+    - full:          full_content >= 500 chars (real article body)
+    - partial:       full_content 50–499 chars (paywall truncation)
+    - headline_only: full_content absent or < 50 chars
+    """
+    length = len((full_content or "").strip())
+    if length >= 500:
+        return "full"
+    if length >= 50:
+        return "partial"
+    return "headline_only"
 
 
 def _fetch_sec_content(url: str) -> str:

@@ -13,7 +13,11 @@
 import os
 
 # ── AI 設定 ───────────────────────────────────────────────────
-# 測試階段用 Groq（免費），之後換 Gemini 只需改這裡
+# 評分改用 Anthropic Claude Haiku
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
+
+# 保留 Groq 設定（向下相容，rescore_fallback 等舊工具可能仍引用）
 GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL    = "llama-3.3-70b-versatile"
 

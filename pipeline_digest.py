@@ -80,13 +80,14 @@ def build_analysis_pack() -> str:
     ]
 
     for article in pack_articles:
-        score        = article.get("ai_score")
-        title        = article.get("title", "")
-        source_type  = article.get("source_type", "")
-        ticker       = article.get("ticker", "")
-        published    = article.get("published", "")
-        ai_summary   = article.get("ai_summary", "")
-        full_content = article.get("full_content", "")
+        score                = article.get("ai_score")
+        title                = article.get("title", "")
+        source_type          = article.get("source_type", "")
+        ticker               = article.get("ticker", "")
+        published            = article.get("published", "")
+        ai_summary           = article.get("ai_summary", "")
+        full_content         = article.get("full_content", "")
+        content_completeness = article.get("content_completeness", "")
 
         score_label = f"{score}/10" if score is not None else "?/10"
         meta_label  = SOURCE_META.get(source_type, {}).get("label", source_type)
@@ -99,6 +100,8 @@ def build_analysis_pack() -> str:
             lines.append(f"- 公司：{ticker}")
         if published:
             lines.append(f"- 日期：{published[:10]}")
+        if content_completeness in ("partial", "headline_only"):
+            lines.append(f"- 內容完整度：{content_completeness}")
         if ai_summary:
             lines.append("")
             lines.append(f"**重點：** {ai_summary}")

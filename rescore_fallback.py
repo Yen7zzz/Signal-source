@@ -13,10 +13,10 @@ import logging
 import sqlite3
 import os
 
-from groq import Groq
+import anthropic
 from scorer import score_article
 from database import get_connection, update_article_ai
-from config import GROQ_API_KEY
+from config import ANTHROPIC_API_KEY
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,8 +43,8 @@ def fetch_fallback_articles() -> list[dict]:
 
 
 def run():
-    if not GROQ_API_KEY:
-        print("❌ GROQ_API_KEY 未設定，中止。")
+    if not ANTHROPIC_API_KEY:
+        print("❌ ANTHROPIC_API_KEY 未設定，中止。")
         return
 
     articles = fetch_fallback_articles()
@@ -58,7 +58,7 @@ def run():
         print("✅ 沒有需要重評分的文章。")
         return
 
-    client  = Groq(api_key=GROQ_API_KEY)
+    client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     updated = 0
     failed  = 0
 
@@ -66,7 +66,7 @@ def run():
         title = article.get("title", "")[:60]
         print(f"[{i:>3}/{total}] {title}...")
 
-        score, key_point = score_article(client, article)
+        score, key_point, *_ = score_article(client, article)
 
         if score != 5 or key_point:
             update_article_ai(
