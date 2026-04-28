@@ -16,6 +16,7 @@ from email.mime.text import MIMEText
 from datetime import datetime
 from collections import defaultdict
 from database import get_recent_articles
+from synthesizer import synthesize_weekly, build_digest_markdown
 from config import (
     EMAIL_SENDER, EMAIL_PASSWORD,
     EMAIL_RECEIVERS, SMTP_HOST, SMTP_PORT,
@@ -23,6 +24,7 @@ from config import (
 )
 
 os.makedirs("logs", exist_ok=True)
+os.makedirs("digests", exist_ok=True)
 
 logging.basicConfig(
     filename="logs/pipeline_digest.log",
@@ -64,106 +66,17 @@ def _score_bar(score: int) -> str:
     return f'<span style="font-family:monospace;color:{color};font-size:13px;">{filled}{empty}</span> <strong style="color:{color};">{score}/10</strong>'
 
 
-def build_analysis_pack() -> str:
-    """產出給 LLM 分析用的 Markdown pack（非人類閱讀）"""
-    all_articles  = get_recent_articles(days=DIGEST_DAYS)
-    pack_articles = get_recent_articles(days=DIGEST_DAYS, min_score=FULL_CONTENT_SCORE_THRESHOLD)
-    pack_articles = sorted(pack_articles, key=lambda a: a.get("ai_score") or 0, reverse=True)
-
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    lines = [
-        f"# Signal-Source Analysis Pack — {date_str}",
-        "",
-        f"本週收集：{len(all_articles)} 篇 | AI 評分 ≥ {FULL_CONTENT_SCORE_THRESHOLD} 精選：{len(pack_articles)} 篇",
-        "",
-        "---",
-    ]
-
-    for article in pack_articles:
-        score                = article.get("ai_score")
-        title                = article.get("title", "")
-        source_type          = article.get("source_type", "")
-        ticker               = article.get("ticker", "")
-        published            = article.get("published", "")
-        ai_summary           = article.get("ai_summary", "")
-        full_content         = article.get("full_content", "")
-        content_completeness = article.get("content_completeness", "")
-
-        score_label = f"{score}/10" if score is not None else "?/10"
-        meta_label  = SOURCE_META.get(source_type, {}).get("label", source_type)
-
-        lines.append("")
-        lines.append(f"## [{score_label}] {title}")
-        lines.append("")
-        lines.append(f"- 來源：{meta_label}")
-        if ticker:
-            lines.append(f"- 公司：{ticker}")
-        if published:
-            lines.append(f"- 日期：{published[:10]}")
-        if content_completeness in ("partial", "headline_only"):
-            lines.append(f"- 內容完整度：{content_completeness}")
-        if ai_summary:
-            lines.append("")
-            lines.append(f"**重點：** {ai_summary}")
-        if full_content:
-            lines.append("")
-            lines.append("### 全文")
-            lines.append("")
-            lines.append(full_content)
-        lines.append("")
-        lines.append("---")
-
-    return "\n".join(lines)
-
-
-def build_article_html(article: dict) -> str:
-    """單篇文章的 HTML 區塊，含 AI 評分和重點摘要"""
-    title       = article.get("title", "")
-    url         = article.get("url", "#")
-    ai_summary  = article.get("ai_summary", "")
-    published   = article.get("published", "")
-    ticker      = article.get("ticker", "")
-    filing_type = article.get("filing_type", "")
-    ai_score    = article.get("ai_score")
-
-    # Badge（SEC 文件才有）
-    badge = ""
-    if ticker:
-        badge += f'<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;margin-right:6px;">{ticker}</span>'
-    if filing_type:
-        badge += f'<span style="background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;">{filing_type}</span>'
-
-    badge_html   = f'<div style="margin-bottom:6px;">{badge}</div>' if badge else ""
-    date_html    = f'<span style="color:#9ca3af;font-size:12px;margin-left:8px;">{published[:10]}</span>' if published else ""
-    score_html   = f'<div style="margin:6px 0;">{_score_bar(ai_score)}</div>' if ai_score else ""
-    summary_html = f'<p style="margin:6px 0 0;color:#374151;line-height:1.6;font-size:14px;border-left:3px solid #e5e7eb;padding-left:10px;">{ai_summary}</p>' if ai_summary else ""
-
-    return f"""
-    <div style="margin-bottom:20px;padding:16px;background:#f9fafb;border-left:3px solid #d1d5db;border-radius:6px;">
-        {badge_html}
-        <a href="{url}" style="font-size:15px;font-weight:600;color:#111827;text-decoration:none;line-height:1.5;">
-            {title}
-        </a>
-        {date_html}
-        {score_html}
-        {summary_html}
-        <div style="margin-top:10px;">
-            <a href="{url}" style="font-size:12px;color:#6366f1;text-decoration:none;">原文連結 →</a>
-        </div>
-    </div>"""
-
-
-def build_digest_html(total_collected: int, total_threshold: int, total_pack: int, analysis_pack: str = "") -> str:
+def build_digest_html(total_collected: int, total_threshold: int, total_pack: int, digest_markdown: str = "") -> str:
     """精簡版 Email HTML：顯示統計漏斗 + 內嵌 analysis_pack"""
     date_str = datetime.now().strftime("%Y 年 %m 月 %d 日")
 
     pack_section = ""
-    if analysis_pack:
+    if digest_markdown:
         import html as html_module
-        escaped = html_module.escape(analysis_pack)
+        escaped = html_module.escape(digest_markdown)
         pack_section = f"""
         <h2 style="font-size:18px;color:#111827;border-bottom:2px solid #6366f1;padding-bottom:8px;margin:32px 0 16px;">
-            📎 Analysis Pack
+            📎 週報全文
         </h2>
         <pre style="white-space:pre-wrap;font-size:13px;line-height:1.6;color:#374151;background:#f9fafb;padding:16px;border-radius:8px;overflow-x:auto;">{escaped}</pre>"""
 
@@ -183,72 +96,6 @@ def build_digest_html(total_collected: int, total_threshold: int, total_pack: in
         </div>
 
         {pack_section}
-
-        <div style="text-align:center;padding:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;margin-top:32px;">
-            Signal-Source 自動生成 · AI 評分由 Groq 提供
-        </div>
-    </body>
-    </html>"""
-
-
-def build_email_html(articles_by_source: dict, total: int, filtered: int) -> str:
-    """組裝完整 HTML Email"""
-    date_str      = datetime.now().strftime("%Y 年 %m 月 %d 日")
-    sections_html = ""
-
-    for source_type in SOURCE_ORDER:
-        articles = articles_by_source.get(source_type, [])
-        if not articles:
-            continue
-
-        meta  = SOURCE_META.get(source_type, {"label": source_type, "icon": "📰", "color": "#6b7280"})
-        items = "".join(build_article_html(a) for a in articles)
-
-        sections_html += f"""
-        <div style="margin-bottom:40px;">
-            <h2 style="font-size:18px;color:#111827;border-bottom:2px solid {meta['color']};padding-bottom:8px;margin-bottom:16px;">
-                {meta['icon']} {meta['label']}
-                <span style="font-size:13px;font-weight:normal;color:#6b7280;margin-left:8px;">({len(articles)} 篇)</span>
-            </h2>
-            {items}
-        </div>"""
-
-    # Gemini 分析提示區塊
-    gemini_prompt = (
-        "以下是本週半導體產業的精選情報（已由 AI 預評分篩選），"
-        "來源包含 SEC 法說會、SemiAnalysis 深度分析、TrendForce 研調、DIGITIMES 供應鏈消息。"
-        "請從以下三個維度分析本週最重要的結構性變化：\\n"
-        "1. 供給端：產能、CapEx、供應商策略\\n"
-        "2. 需求端：AI 晶片拉貨、庫存水位\\n"
-        "3. 技術節點：HBM、CoWoS、先進封裝\\n"
-        "最後指出一個你認為最值得追蹤的潛在機會或風險。"
-    )
-
-    gemini_tip = f"""
-    <div style="margin:32px 0;padding:20px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;">
-        <h3 style="margin:0 0 12px;font-size:15px;color:#92400e;">💡 Gemini 分析提示</h3>
-        <p style="margin:0 0 10px;font-size:13px;color:#78350f;">複製上方情報後，搭配以下 Prompt 使用：</p>
-        <div style="background:#fff;padding:14px;border-radius:6px;font-size:13px;color:#374151;line-height:1.8;white-space:pre-wrap;">{gemini_prompt}</div>
-    </div>"""
-
-    return f"""
-    <html>
-    <head><meta charset="UTF-8"></head>
-    <body style="font-family:-apple-system,Arial,sans-serif;max-width:700px;margin:auto;padding:24px;color:#111827;">
-
-        <div style="text-align:center;padding:28px 0;border-bottom:1px solid #e5e7eb;margin-bottom:32px;">
-            <h1 style="font-size:24px;color:#111827;margin:0;">📡 Signal-Source 週報</h1>
-            <p style="color:#6b7280;margin-top:8px;font-size:14px;">
-                {date_str} · AI 預評分篩選
-            </p>
-            <p style="color:#9ca3af;font-size:13px;margin-top:4px;">
-                本週收集 {filtered} 篇 → AI 評分 ≥ {AI_SCORE_THRESHOLD} 分保留 {total} 篇
-            </p>
-        </div>
-
-        {sections_html}
-
-        {gemini_tip}
 
         <div style="text-align:center;padding:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;margin-top:32px;">
             Signal-Source 自動生成 · AI 評分由 Groq 提供
@@ -293,8 +140,21 @@ def run():
         print("⚠️  沒有符合精選門檻的文章，請先執行 pipeline_collect.py 或降低 FULL_CONTENT_SCORE_THRESHOLD")
         return
 
-    pack = build_analysis_pack()
-    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles), analysis_pack=pack)
+    print("\n🤖 呼叫 Claude 進行跨文章合成...")
+    synthesis = synthesize_weekly(pack_articles)
+    if synthesis:
+        print("✅ 合成完成")
+    else:
+        print("⚠️  合成失敗，週報將只顯示原始文章清單")
+
+    md       = build_digest_markdown(synthesis, pack_articles, len(all_articles))
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    md_path  = f"digests/{date_str}.md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(md)
+    print(f"📝 週報已寫入 {md_path}")
+
+    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles), digest_markdown=md)
     send_email(html, len(pack_articles))
 
     print(f"\n🎉 Pipeline Digest 完成！")
