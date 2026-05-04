@@ -21,6 +21,7 @@ from config import (
     EMAIL_SENDER, EMAIL_PASSWORD,
     EMAIL_RECEIVERS, SMTP_HOST, SMTP_PORT,
     DIGEST_DAYS, AI_SCORE_THRESHOLD, FULL_CONTENT_SCORE_THRESHOLD,
+    SOURCE_META, SOURCE_ORDER,
 )
 
 os.makedirs("logs", exist_ok=True)
@@ -31,29 +32,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
-
-# 各源頭的顯示設定
-SOURCE_META = {
-    "semianalysis":        {"label": "SemiAnalysis",           "icon": "🔬", "color": "#6366f1"},
-    "trendforce":          {"label": "TrendForce",              "icon": "📊", "color": "#0ea5e9"},
-    "digitimes":           {"label": "DIGITIMES",               "icon": "📡", "color": "#10b981"},
-    "sec_edgar":           {"label": "SEC EDGAR 法說會/季報",   "icon": "📋", "color": "#f59e0b"},
-    "tw_revenue":          {"label": "台股月營收",               "icon": "🇹🇼", "color": "#e11d48"},
-    "semi_engineering":    {"label": "Semiconductor Engineering","icon": "⚙️", "color": "#7c3aed"},
-    "eetimes":             {"label": "EE Times",                "icon": "⚡", "color": "#b45309"},
-    "toms_hardware":       {"label": "Tom's Hardware",          "icon": "🖥️", "color": "#0369a1"},
-    "serve_the_home":      {"label": "ServeTheHome",            "icon": "🗄️", "color": "#0f766e"},
-    "next_platform":       {"label": "Next Platform",           "icon": "🚀", "color": "#7e22ce"},
-    "fabricated_knowledge":{"label": "Fabricated Knowledge",    "icon": "🏭", "color": "#be123c"},
-}
-
-SOURCE_ORDER = [
-    "sec_edgar", "tw_revenue",
-    "semianalysis", "fabricated_knowledge",
-    "semi_engineering", "next_platform",
-    "trendforce", "digitimes",
-    "eetimes", "toms_hardware", "serve_the_home",
-]
 
 
 def _score_bar(score: int) -> str:

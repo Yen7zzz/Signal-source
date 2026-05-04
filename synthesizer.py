@@ -11,8 +11,7 @@ from datetime import datetime
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, FULL_CONTENT_SCORE_THRESHOLD
-from pipeline_digest import SOURCE_META
+from config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, FULL_CONTENT_SCORE_THRESHOLD, SOURCE_META
 
 logger = logging.getLogger(__name__)
 
