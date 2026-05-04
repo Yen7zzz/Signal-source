@@ -10,6 +10,7 @@
 #       新增 ai_summary 欄位，存 Groq 一句話重點摘要
 # ============================================================
 
+import json
 import os
 import sqlite3
 import logging
@@ -84,6 +85,17 @@ def init_db():
             mom_pct      REAL,
             created_at   TEXT DEFAULT (datetime('now')),
             UNIQUE(stock_id, year, month)
+        )
+    """)
+
+    # 週報合成結果存檔表（供跨週比較使用）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS weekly_digests (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_date         TEXT NOT NULL,
+            synthesis_json   TEXT,
+            article_titles   TEXT,
+            created_at       TEXT DEFAULT (datetime('now'))
         )
     """)
 
@@ -227,6 +239,46 @@ def get_recent_titles(days: int = 7) -> list[str]:
     ).fetchall()
     conn.close()
     return [row["title"] for row in rows if row["title"]]
+
+
+def save_weekly_digest(run_date: str, synthesis: dict, article_titles: list[str]) -> bool:
+    """儲存本週合成結果，供下週跨週比較使用"""
+    try:
+        conn = get_connection()
+        conn.execute("""
+            INSERT INTO weekly_digests (run_date, synthesis_json, article_titles)
+            VALUES (?, ?, ?)
+        """, (run_date, json.dumps(synthesis, ensure_ascii=False),
+              json.dumps(article_titles, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"儲存 weekly_digest 失敗：{e}")
+        return False
+
+
+def get_last_weekly_digest() -> dict | None:
+    """撈取最近一筆週報合成結果，回傳 None 若無資料或 JSON 解析失敗"""
+    try:
+        conn = get_connection()
+        row = conn.execute("""
+            SELECT run_date, synthesis_json, article_titles
+            FROM   weekly_digests
+            ORDER  BY run_date DESC
+            LIMIT  1
+        """).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return {
+            "run_date":       row["run_date"],
+            "synthesis":      json.loads(row["synthesis_json"]),
+            "article_titles": json.loads(row["article_titles"]),
+        }
+    except Exception as e:
+        logger.error(f"讀取 last_weekly_digest 失敗：{e}")
+        return None
 
 
 def get_recent_articles(days: int = 7, min_score: int = None) -> list[dict]:

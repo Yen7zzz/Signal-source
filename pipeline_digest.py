@@ -15,7 +15,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
 from collections import defaultdict
-from database import get_recent_articles
+from database import get_recent_articles, save_weekly_digest, get_last_weekly_digest
 from synthesizer import synthesize_weekly, build_digest_markdown
 from config import (
     EMAIL_SENDER, EMAIL_PASSWORD,
@@ -118,10 +118,20 @@ def run():
         print("⚠️  沒有符合精選門檻的文章，請先執行 pipeline_collect.py 或降低 FULL_CONTENT_SCORE_THRESHOLD")
         return
 
+    last_digest = get_last_weekly_digest()
+    if last_digest:
+        print(f"📅 找到上週週報（{last_digest['run_date']}），啟用跨週比較")
+    else:
+        print("📅 無歷史週報，首次生成")
+
     print("\n🤖 呼叫 Claude 進行跨文章合成...")
-    synthesis = synthesize_weekly(pack_articles)
+    synthesis = synthesize_weekly(pack_articles, last_digest=last_digest)
     if synthesis:
         print("✅ 合成完成")
+        run_date      = datetime.now().strftime("%Y-%m-%d")
+        article_titles = [a.get("title", "") for a in pack_articles]
+        save_weekly_digest(run_date, synthesis, article_titles)
+        print(f"💾 本週合成結果已存入 DB（{run_date}）")
     else:
         print("⚠️  合成失敗，週報將只顯示原始文章清單")
 
