@@ -43,7 +43,7 @@ jobs:
         run: |
           git config user.name "IndustryRadar Bot"
           git config user.email "action@github.com"
-          git add -f digests/
+          git add -f digests/ data/industry_radar.db
           git diff --staged --quiet || git commit -m "📊 週報合成 $(date '+%Y-%m-%d')"
           git pull --rebase
           git push
