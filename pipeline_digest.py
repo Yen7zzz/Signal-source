@@ -1,27 +1,29 @@
 # ============================================================
-# pipeline_digest.py — 每週執行：撈高分文章 → 整理 HTML → 寄信
+# pipeline_digest.py — 每週執行：撈文章 → 產生 evidence pack markdown
 #
-# 對應 Signal-Flow 的 pipeline_b.py
-# 關鍵差異：
-#   只寄出 ai_score >= AI_SCORE_THRESHOLD 的文章
-#   每篇文章顯示 AI 評分條 + Groq 的一句話重點
-#   附上 Gemini 分析用的 Prompt 模板（Email 底部）
+# 不再呼叫任何 LLM。文章篩選與排序完全依賴 pipeline_collect.py
+# 寫入的 rule_score / is_junk（規則式評分），不使用 ai_score。
+#
+# 這一步只做 markdown 產生：
+#   get_recent_articles() → render_evidence_pack() → digests/{date}.md
+# 寄信（send_email）與週報 DB 寫入（save_weekly_digest）暫緩，
+# 待階段 2b 實作。
 # ============================================================
 
+import argparse
 import smtplib
 import logging
 import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
-from database import get_recent_articles, save_weekly_digest, get_last_weekly_digest
-from synthesizer import synthesize_weekly, build_digest_markdown
+from database import get_recent_articles
 from config import (
     EMAIL_SENDER, EMAIL_PASSWORD,
     EMAIL_RECEIVERS, SMTP_HOST, SMTP_PORT,
-    DIGEST_DAYS, AI_SCORE_THRESHOLD, FULL_CONTENT_SCORE_THRESHOLD,
-    SOURCE_META, SOURCE_ORDER,
+    DIGEST_DAYS, SOURCE_META, SOURCE_ORDER,
+    EVIDENCE_FULL_TEXT_THRESHOLD, EVIDENCE_SUMMARY_THRESHOLD, EVIDENCE_FULL_TEXT_CHARS,
 )
 
 os.makedirs("logs", exist_ok=True)
@@ -34,59 +36,25 @@ logging.basicConfig(
 )
 
 
-def _score_bar(score: int) -> str:
-    """把分數轉成視覺化的分數條，例如 ████████░░ 8/10"""
-    if not score:
-        return ""
-    filled = "█" * score
-    empty  = "░" * (10 - score)
-    color  = "#16a34a" if score >= 8 else "#ca8a04" if score >= 6 else "#dc2626"
-    return f'<span style="font-family:monospace;color:{color};font-size:13px;">{filled}{empty}</span> <strong style="color:{color};">{score}/10</strong>'
+def _rule_score(article: dict) -> int:
+    """rule_score 可能為 None（尚未跑過規則式評分的舊資料），視為 0（併入低訊號層）"""
+    score = article.get("rule_score")
+    return score if score is not None else 0
 
 
-def build_digest_html(total_collected: int, total_threshold: int, total_pack: int, digest_markdown: str = "") -> str:
-    """精簡版 Email HTML：顯示統計漏斗 + 內嵌 analysis_pack"""
-    date_str = datetime.now().strftime("%Y 年 %m 月 %d 日")
-
-    pack_section = ""
-    if digest_markdown:
-        import html as html_module
-        escaped = html_module.escape(digest_markdown)
-        pack_section = f"""
-        <h2 style="font-size:18px;color:#111827;border-bottom:2px solid #6366f1;padding-bottom:8px;margin:32px 0 16px;">
-            📎 週報全文
-        </h2>
-        <pre style="white-space:pre-wrap;font-size:13px;line-height:1.6;color:#374151;background:#f9fafb;padding:16px;border-radius:8px;overflow-x:auto;">{escaped}</pre>"""
-
-    return f"""
-    <html>
-    <head><meta charset="UTF-8"></head>
-    <body style="font-family:-apple-system,Arial,sans-serif;max-width:700px;margin:auto;padding:24px;color:#111827;">
-
-        <div style="text-align:center;padding:28px 0;border-bottom:1px solid #e5e7eb;margin-bottom:32px;">
-            <h1 style="font-size:24px;color:#111827;margin:0;">📡 Signal-Source 週報</h1>
-            <p style="color:#6b7280;margin-top:8px;font-size:14px;">{date_str} · AI 預評分篩選</p>
-            <p style="color:#9ca3af;font-size:13px;margin-top:4px;">
-                本週收集 {total_collected} 篇
-                → ≥{AI_SCORE_THRESHOLD} 分 {total_threshold} 篇
-                → ≥{FULL_CONTENT_SCORE_THRESHOLD} 分精選 {total_pack} 篇
-            </p>
-        </div>
-
-        {pack_section}
-
-        <div style="text-align:center;padding:20px;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;margin-top:32px;">
-            Signal-Source 自動生成 · AI 評分由 Groq 提供
-        </div>
-    </body>
-    </html>"""
+def _truncate(text: str, n: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= n:
+        return text
+    return text[:n].rstrip() + "…"
 
 
 def send_email(html_content: str, total_articles: int):
+    """寄送週報 Email。這一步暫不呼叫，留待階段 2b 接上 evidence pack。"""
     receivers = [r.strip() for r in EMAIL_RECEIVERS.split(",") if r.strip()]
 
     msg            = MIMEMultipart("alternative")
-    msg["Subject"] = f"📡 Signal-Source 週報 — {datetime.now().strftime('%Y/%m/%d')} ({total_articles} 篇精選)"
+    msg["Subject"] = f"📡 Signal-Source 週報 — {datetime.now().strftime('%Y/%m/%d')} ({total_articles} 篇)"
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(receivers)
 
@@ -101,52 +69,187 @@ def send_email(html_content: str, total_articles: int):
     logging.info(f"週報寄出成功，共 {total_articles} 篇")
 
 
-def run():
+def render_evidence_pack(articles: list[dict], stats: dict) -> str:
+    """
+    把文章清單整理成給人 / 給下游 LLM 讀的 evidence pack markdown。
+    不做任何摘要或合成，純粹依 rule_score 分層排版。
+    """
+    lines = []
+
+    date_str = stats.get("date", datetime.now().strftime("%Y-%m-%d"))
+    start    = stats.get("start", "")
+    end      = stats.get("end", "")
+    total    = stats.get("total", len(articles))
+    coverage = stats.get("full_text_coverage_pct", 0)
+
+    lines.append(f"# Signal-Source Evidence Pack · {date_str}")
+    lines.append(f"> 期間：{start} ~ {end} | 收錄 {total} 篇 | 全文覆蓋 {coverage:.0f}%")
+    lines.append("")
+
+    tw_articles    = [a for a in articles if a.get("source_type") == "tw_revenue"]
+    sec_articles   = [a for a in articles if a.get("source_type") == "sec_edgar"]
+    intel_articles = [a for a in articles if a.get("source_type") not in ("tw_revenue", "sec_edgar")]
+
+    # ── 台股月營收 ──────────────────────────────────────────
+    lines.append("## 台股月營收")
+    lines.append("")
+    if tw_articles:
+        for a in sorted(tw_articles, key=lambda a: a.get("ticker") or ""):
+            lines.append(f"- {a.get('ticker', '')} {a.get('title', '')}")
+    else:
+        lines.append("（本期無資料）")
+    lines.append("")
+
+    # ── SEC Filings ─────────────────────────────────────────
+    lines.append("## SEC Filings")
+    lines.append("")
+    if sec_articles:
+        for a in sorted(sec_articles, key=lambda a: (a.get("ticker") or "", a.get("published") or "")):
+            lines.append(
+                f"- **{a.get('ticker', '')}** {a.get('filing_type', '')} · "
+                f"{a.get('published', '')} · [原文]({a.get('url', '')})"
+            )
+    else:
+        lines.append("（本期無資料）")
+    lines.append("")
+
+    # ── 情報（依 rule_score 降序，分三層）─────────────────────
+    lines.append("## 情報（依 rule_score 降序）")
+    lines.append("")
+
+    intel_sorted = sorted(intel_articles, key=_rule_score, reverse=True)
+    high = [a for a in intel_sorted if _rule_score(a) >= EVIDENCE_FULL_TEXT_THRESHOLD]
+    mid  = [a for a in intel_sorted if EVIDENCE_SUMMARY_THRESHOLD <= _rule_score(a) < EVIDENCE_FULL_TEXT_THRESHOLD]
+    low  = [a for a in intel_sorted if _rule_score(a) < EVIDENCE_SUMMARY_THRESHOLD]
+
+    lines.append(f"### 高訊號（rule_score >= {EVIDENCE_FULL_TEXT_THRESHOLD}）")
+    lines.append("")
+    if high:
+        for a in high:
+            label = SOURCE_META.get(a.get("source_type"), {}).get("label", a.get("source_type", ""))
+            lines.append(f"#### [{_rule_score(a)}] {a.get('title', '')}")
+            lines.append(f"{a.get('published', '')} · {label} · [原文]({a.get('url', '')})")
+            lines.append("")
+            full_content = a.get("full_content") or ""
+            if full_content:
+                lines.append(_truncate(full_content, EVIDENCE_FULL_TEXT_CHARS))
+            else:
+                lines.append("⚠️ 無全文")
+                summary = a.get("summary") or ""
+                if summary:
+                    lines.append(_truncate(summary, EVIDENCE_FULL_TEXT_CHARS))
+            lines.append("")
+    else:
+        lines.append("（本期無資料）")
+        lines.append("")
+
+    lines.append(f"### 中訊號（{EVIDENCE_SUMMARY_THRESHOLD} <= rule_score < {EVIDENCE_FULL_TEXT_THRESHOLD}）")
+    lines.append("")
+    if mid:
+        for a in mid:
+            label   = SOURCE_META.get(a.get("source_type"), {}).get("label", a.get("source_type", ""))
+            summary = _truncate(a.get("summary") or "", 300)
+            lines.append(
+                f"- **[{_rule_score(a)}] {a.get('title', '')}** · {label} · "
+                f"{a.get('published', '')} · [原文]({a.get('url', '')})"
+            )
+            if summary:
+                lines.append(f"  {summary}")
+    else:
+        lines.append("（本期無資料）")
+    lines.append("")
+
+    lines.append(f"### 低訊號（rule_score < {EVIDENCE_SUMMARY_THRESHOLD}）")
+    lines.append("")
+    if low:
+        for a in low:
+            label = SOURCE_META.get(a.get("source_type"), {}).get("label", a.get("source_type", ""))
+            lines.append(f"- [{_rule_score(a)}] {a.get('title', '')} · {label} · [原文]({a.get('url', '')})")
+    else:
+        lines.append("（本期無資料）")
+    lines.append("")
+
+    # ── 統計 ────────────────────────────────────────────────
+    lines.append("## 統計")
+    lines.append("")
+
+    lines.append("### 各 source_type 篇數")
+    src_counts = defaultdict(int)
+    for a in articles:
+        src_counts[a.get("source_type") or "unknown"] += 1
+    for src in SOURCE_ORDER:
+        if src in src_counts:
+            label = SOURCE_META.get(src, {}).get("label", src)
+            lines.append(f"- {label}（{src}）：{src_counts[src]} 篇")
+    for src, n in src_counts.items():
+        if src not in SOURCE_ORDER:
+            lines.append(f"- {src}：{n} 篇")
+    lines.append("")
+
+    lines.append("### content_completeness 分布")
+    cc_counts = defaultdict(int)
+    for a in articles:
+        cc_counts[a.get("content_completeness") or "unknown"] += 1
+    for k in ("full", "partial", "headline_only", "unknown"):
+        if k in cc_counts:
+            lines.append(f"- {k}：{cc_counts[k]} 篇")
+    lines.append("")
+
+    lines.append("### rule_score 分布")
+    rs_counts = defaultdict(int)
+    for a in articles:
+        rs_counts[_rule_score(a)] += 1
+    for s in range(0, 11):
+        if s in rs_counts:
+            suffix = "（含尚未規則式評分的舊資料）" if s == 0 else ""
+            lines.append(f"- {s} 分：{rs_counts[s]} 篇{suffix}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def run(dry_run: bool = False):
     print(f"\n{'='*55}")
     print(f"📊 Pipeline Digest 開始 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*55}")
 
-    all_articles      = get_recent_articles(days=DIGEST_DAYS)
-    filtered_articles = get_recent_articles(days=DIGEST_DAYS, min_score=AI_SCORE_THRESHOLD)
-    pack_articles     = get_recent_articles(days=DIGEST_DAYS, min_score=FULL_CONTENT_SCORE_THRESHOLD)
+    articles = get_recent_articles(days=DIGEST_DAYS)
+    print(f"\n📦 本期收集：{len(articles)} 篇（已排除 is_junk=1，未傳 min_score）")
 
-    print(f"\n📦 本週收集：{len(all_articles)} 篇")
-    print(f"✅ AI 評分 ≥ {AI_SCORE_THRESHOLD} 分：{len(filtered_articles)} 篇")
-    print(f"⭐ AI 評分 ≥ {FULL_CONTENT_SCORE_THRESHOLD} 分精選：{len(pack_articles)} 篇")
+    today = datetime.now().strftime("%Y-%m-%d")
+    since = (datetime.now() - timedelta(days=DIGEST_DAYS)).strftime("%Y-%m-%d")
 
-    if not pack_articles:
-        print("⚠️  沒有符合精選門檻的文章，請先執行 pipeline_collect.py 或降低 FULL_CONTENT_SCORE_THRESHOLD")
-        return
+    full_count = sum(1 for a in articles if a.get("content_completeness") == "full")
+    coverage   = (full_count / len(articles) * 100) if articles else 0.0
 
-    last_digest = get_last_weekly_digest()
-    if last_digest:
-        print(f"📅 找到上週週報（{last_digest['run_date']}），啟用跨週比較")
-    else:
-        print("📅 無歷史週報，首次生成")
+    stats = {
+        "date":  today,
+        "start": since,
+        "end":   today,
+        "total": len(articles),
+        "full_text_coverage_pct": coverage,
+    }
 
-    print("\n🤖 呼叫 Claude 進行跨文章合成...")
-    synthesis = synthesize_weekly(pack_articles, last_digest=last_digest)
-    if synthesis:
-        print("✅ 合成完成")
-        run_date      = datetime.now().strftime("%Y-%m-%d")
-        article_titles = [a.get("title", "") for a in pack_articles]
-        save_weekly_digest(run_date, synthesis, article_titles)
-        print(f"💾 本週合成結果已存入 DB（{run_date}）")
-    else:
-        print("⚠️  合成失敗，週報將只顯示原始文章清單")
+    md = render_evidence_pack(articles, stats)
 
-    md       = build_digest_markdown(synthesis, pack_articles, len(all_articles))
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    md_path  = f"digests/{date_str}.md"
+    md_path = f"digests/{today}.md"
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
-    print(f"📝 週報已寫入 {md_path}")
 
-    html = build_digest_html(len(all_articles), len(filtered_articles), len(pack_articles), digest_markdown=md)
-    send_email(html, len(pack_articles))
+    if dry_run:
+        preview_lines = md.splitlines()
+        print("\n" + "\n".join(preview_lines[:80]))
+        print(f"\n... (共 {len(preview_lines)} 行，{len(md)} 字元)")
+        print(f"\n📝 evidence pack 已寫入 {md_path}（dry-run，跳過寄信與 save_weekly_digest）")
+    else:
+        print(f"\n📝 evidence pack 已寫入 {md_path}")
+        print("📧 寄信功能待階段 2b 實作")
 
     print(f"\n🎉 Pipeline Digest 完成！")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true", help="只產生 markdown 預覽，不寄信、不寫 DB")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run)

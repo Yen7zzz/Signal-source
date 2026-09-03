@@ -27,6 +27,11 @@ AI_SCORE_THRESHOLD = 6
 # 全文抓取門檻：ai_score >= 此值才用 Jina AI 抓完整內文
 FULL_CONTENT_SCORE_THRESHOLD = 7
 
+# ── Evidence Pack 設定（規則式評分，取代 AI_SCORE_THRESHOLD 系列）───
+EVIDENCE_FULL_TEXT_THRESHOLD = 7    # >= 此分數內嵌 full_content
+EVIDENCE_SUMMARY_THRESHOLD   = 4    # >= 此分數內嵌 RSS summary
+EVIDENCE_FULL_TEXT_CHARS     = 1000 # full_content 內嵌字數上限
+
 # ── Email 設定 ────────────────────────────────────────────────
 EMAIL_SENDER    = os.environ.get("EMAIL_SENDER", "")
 EMAIL_PASSWORD  = os.environ.get("EMAIL_PASSWORD", "")       # Gmail App Password
