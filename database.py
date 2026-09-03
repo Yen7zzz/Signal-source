@@ -195,6 +195,27 @@ def update_article_ai(url: str, ai_score: int, ai_summary: str, full_content: st
         logger.error(f"更新 AI 評分失敗：{e} | URL: {url}")
 
 
+def update_full_content(url: str, full_content: str) -> bool:
+    """
+    只更新單篇文章的 full_content 欄位，不動 ai_score / ai_summary。
+    供規則式評分流程於 Jina 抓完全文後回寫使用。
+    """
+    try:
+        conn = get_connection()
+        conn.execute("""
+            UPDATE articles
+            SET full_content = ?
+            WHERE url = ?
+        """, (full_content, url))
+        affected = conn.total_changes
+        conn.commit()
+        conn.close()
+        return affected > 0
+    except Exception as e:
+        logger.error(f"更新 full_content 失敗：{e} | URL: {url}")
+        return False
+
+
 def update_rule_score(url: str, rule_score: int, is_junk: bool) -> bool:
     """
     更新單篇文章的規則式評分結果（rule_score / is_junk）
