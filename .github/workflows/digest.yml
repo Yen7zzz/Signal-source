@@ -16,7 +16,6 @@ jobs:
       EMAIL_SENDER:      ${{ secrets.EMAIL_SENDER }}
       EMAIL_PASSWORD:    ${{ secrets.EMAIL_PASSWORD }}
       EMAIL_RECEIVERS:   ${{ secrets.EMAIL_RECEIVERS }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: 拉取程式碼和資料庫
@@ -39,11 +38,11 @@ jobs:
       - name: 生成並寄出週報
         run: python pipeline_digest.py
 
-      - name: 儲存週報回 GitHub
+      - name: 儲存 evidence pack 回 GitHub
         run: |
           git config user.name "IndustryRadar Bot"
           git config user.email "action@github.com"
-          git add -f digests/ data/industry_radar.db
-          git diff --staged --quiet || git commit -m "📊 週報合成 $(date '+%Y-%m-%d')"
+          git add -f digests/
+          git diff --staged --quiet || git commit -m "📡 Evidence Pack $(date '+%Y-%m-%d')"
           git pull --rebase
           git push

@@ -16,6 +16,7 @@ import logging
 import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from datetime import datetime, timedelta
 from collections import defaultdict
 from database import get_recent_articles
@@ -49,24 +50,65 @@ def _truncate(text: str, n: int) -> str:
     return text[:n].rstrip() + "…"
 
 
-def send_email(html_content: str, total_articles: int):
-    """寄送週報 Email。這一步暫不呼叫，留待階段 2b 接上 evidence pack。"""
+def _tier_split(articles: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """把非 tw_revenue / sec_edgar 的文章依 rule_score 分成高/中/低三層（供 render 與 email 共用）"""
+    intel_articles = [a for a in articles if a.get("source_type") not in ("tw_revenue", "sec_edgar")]
+    intel_sorted = sorted(intel_articles, key=_rule_score, reverse=True)
+    high = [a for a in intel_sorted if _rule_score(a) >= EVIDENCE_FULL_TEXT_THRESHOLD]
+    mid  = [a for a in intel_sorted if EVIDENCE_SUMMARY_THRESHOLD <= _rule_score(a) < EVIDENCE_FULL_TEXT_THRESHOLD]
+    low  = [a for a in intel_sorted if _rule_score(a) < EVIDENCE_SUMMARY_THRESHOLD]
+    return high, mid, low
+
+
+def send_email(md_path: str, stats: dict):
+    """
+    寄送 evidence pack：.md 作為附件，body 只放摘要統計。
+    evidence pack 是給下游 LLM 讀的原料，不是排版給人看的 HTML 週報，
+    所以不內嵌內容，只附檔。
+    """
     receivers = [r.strip() for r in EMAIL_RECEIVERS.split(",") if r.strip()]
 
-    msg            = MIMEMultipart("alternative")
-    msg["Subject"] = f"📡 Signal-Source 週報 — {datetime.now().strftime('%Y/%m/%d')} ({total_articles} 篇)"
+    total = stats.get("total", 0)
+    subject_date = datetime.now().strftime("%Y/%m/%d")
+
+    body_lines = [
+        f"Signal-Source Evidence Pack",
+        f"期間：{stats.get('start', '')} ~ {stats.get('end', '')}",
+        f"總篇數：{total}",
+        f"高訊號：{stats.get('high_count', 0)} 篇",
+        f"中訊號：{stats.get('mid_count', 0)} 篇",
+        f"低訊號：{stats.get('low_count', 0)} 篇",
+        f"全文覆蓋率：{stats.get('full_text_coverage_pct', 0):.0f}%",
+        "",
+        "各 source_type 篇數：",
+    ]
+    for src, n in stats.get("src_counts", {}).items():
+        label = SOURCE_META.get(src, {}).get("label", src)
+        body_lines.append(f"  {label}（{src}）：{n} 篇")
+
+    body = "\n".join(body_lines)
+
+    msg            = MIMEMultipart()
+    msg["Subject"] = f"📡 Signal-Source Evidence Pack — {subject_date}（{total} 篇）"
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = ", ".join(receivers)
 
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    with open(md_path, "rb") as f:
+        attachment = MIMEApplication(f.read(), _subtype="markdown")
+    attachment.add_header(
+        "Content-Disposition", "attachment", filename=os.path.basename(md_path)
+    )
+    msg.attach(attachment)
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.sendmail(EMAIL_SENDER, receivers, msg.as_string())
 
-    print(f"📧 週報已寄出 → {receivers}")
-    logging.info(f"週報寄出成功，共 {total_articles} 篇")
+    print(f"📧 evidence pack 已寄出 → {receivers}")
+    logging.info(f"evidence pack 寄出成功，共 {total} 篇")
 
 
 def render_evidence_pack(articles: list[dict], stats: dict) -> str:
@@ -86,9 +128,8 @@ def render_evidence_pack(articles: list[dict], stats: dict) -> str:
     lines.append(f"> 期間：{start} ~ {end} | 收錄 {total} 篇 | 全文覆蓋 {coverage:.0f}%")
     lines.append("")
 
-    tw_articles    = [a for a in articles if a.get("source_type") == "tw_revenue"]
-    sec_articles   = [a for a in articles if a.get("source_type") == "sec_edgar"]
-    intel_articles = [a for a in articles if a.get("source_type") not in ("tw_revenue", "sec_edgar")]
+    tw_articles  = [a for a in articles if a.get("source_type") == "tw_revenue"]
+    sec_articles = [a for a in articles if a.get("source_type") == "sec_edgar"]
 
     # ── 台股月營收 ──────────────────────────────────────────
     lines.append("## 台股月營收")
@@ -117,10 +158,7 @@ def render_evidence_pack(articles: list[dict], stats: dict) -> str:
     lines.append("## 情報（依 rule_score 降序）")
     lines.append("")
 
-    intel_sorted = sorted(intel_articles, key=_rule_score, reverse=True)
-    high = [a for a in intel_sorted if _rule_score(a) >= EVIDENCE_FULL_TEXT_THRESHOLD]
-    mid  = [a for a in intel_sorted if EVIDENCE_SUMMARY_THRESHOLD <= _rule_score(a) < EVIDENCE_FULL_TEXT_THRESHOLD]
-    low  = [a for a in intel_sorted if _rule_score(a) < EVIDENCE_SUMMARY_THRESHOLD]
+    high, mid, low = _tier_split(articles)
 
     lines.append(f"### 高訊號（rule_score >= {EVIDENCE_FULL_TEXT_THRESHOLD}）")
     lines.append("")
@@ -222,12 +260,26 @@ def run(dry_run: bool = False):
     full_count = sum(1 for a in articles if a.get("content_completeness") == "full")
     coverage   = (full_count / len(articles) * 100) if articles else 0.0
 
+    high, mid, low = _tier_split(articles)
+
+    src_counts = defaultdict(int)
+    for a in articles:
+        src_counts[a.get("source_type") or "unknown"] += 1
+    ordered_src_counts = {src: src_counts[src] for src in SOURCE_ORDER if src in src_counts}
+    for src, n in src_counts.items():
+        if src not in SOURCE_ORDER:
+            ordered_src_counts[src] = n
+
     stats = {
         "date":  today,
         "start": since,
         "end":   today,
         "total": len(articles),
         "full_text_coverage_pct": coverage,
+        "high_count": len(high),
+        "mid_count": len(mid),
+        "low_count": len(low),
+        "src_counts": ordered_src_counts,
     }
 
     md = render_evidence_pack(articles, stats)
@@ -243,7 +295,7 @@ def run(dry_run: bool = False):
         print(f"\n📝 evidence pack 已寫入 {md_path}（dry-run，跳過寄信與 save_weekly_digest）")
     else:
         print(f"\n📝 evidence pack 已寫入 {md_path}")
-        print("📧 寄信功能待階段 2b 實作")
+        send_email(md_path, stats)
 
     print(f"\n🎉 Pipeline Digest 完成！")
 
