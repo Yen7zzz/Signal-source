@@ -64,6 +64,8 @@ def init_db():
         ("ai_score",              "INTEGER"),
         ("ai_summary",            "TEXT"),
         ("content_completeness",  "TEXT"),
+        ("rule_score",            "INTEGER"),
+        ("is_junk",               "INTEGER"),
     ]
     for col_name, col_type in new_columns:
         try:
@@ -193,6 +195,29 @@ def update_article_ai(url: str, ai_score: int, ai_summary: str, full_content: st
         logger.error(f"更新 AI 評分失敗：{e} | URL: {url}")
 
 
+def update_rule_score(url: str, rule_score: int, is_junk: bool) -> bool:
+    """
+    更新單篇文章的規則式評分結果（rule_score / is_junk）
+
+    與 ai_score / ai_summary（Haiku 時期歷史資料）完全分開存放，
+    不覆寫、不混用。
+    """
+    try:
+        conn = get_connection()
+        conn.execute("""
+            UPDATE articles
+            SET rule_score = ?, is_junk = ?
+            WHERE url = ?
+        """, (rule_score, 1 if is_junk else 0, url))
+        affected = conn.total_changes
+        conn.commit()
+        conn.close()
+        return affected > 0
+    except Exception as e:
+        logger.error(f"更新 rule_score 失敗：{e} | URL: {url}")
+        return False
+
+
 def tw_revenue_exists(stock_id: str, year: int, month: int) -> bool:
     """去重：該月份的月營收是否已存在於結構化資料表"""
     conn = get_connection()
@@ -281,35 +306,54 @@ def get_last_weekly_digest() -> dict | None:
         return None
 
 
-def get_recent_articles(days: int = 7, min_score: int = None) -> list[dict]:
+def get_recent_articles(
+    days: int = 7,
+    min_score: int = None,
+    include_junk: bool = False,
+    min_rule_score: int | None = None,
+) -> list[dict]:
     """
     撈取最近 N 天的文章，供 pipeline_digest.py 生成週報
 
     Args:
-        days:      撈幾天內的文章
-        min_score: 最低 AI 評分門檻（None 表示不過濾）
+        days:           撈幾天內的文章
+        min_score:      最低 AI 評分門檻（None 表示不過濾，維持原行為不動）
+        include_junk:   是否包含 is_junk = 1 的文章（預設 False，排除規則式判定的雜訊）
+        min_rule_score: 最低 rule_score 門檻（None 表示不過濾）
 
     Returns:
-        按 ai_score 降序排列的文章清單
+        按 ai_score 降序排列的文章清單（含 rule_score、is_junk 欄位）
     """
     since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     conn  = get_connection()
 
+    where_clauses = ["created_at >= ?"]
+    params = [since]
+
     if min_score is not None:
-        rows = conn.execute("""
-            SELECT *
-            FROM   articles
-            WHERE  created_at >= ?
-              AND  (ai_score >= ? OR ai_score IS NULL)
-            ORDER  BY ai_score DESC, source_type, published DESC
-        """, (since, min_score)).fetchall()
+        where_clauses.append("(ai_score >= ? OR ai_score IS NULL)")
+        params.append(min_score)
+
+    if not include_junk:
+        where_clauses.append("(is_junk IS NULL OR is_junk != 1)")
+
+    if min_rule_score is not None:
+        where_clauses.append("(rule_score >= ? OR rule_score IS NULL)")
+        params.append(min_rule_score)
+
+    where_sql = " AND ".join(where_clauses)
+
+    if min_score is not None:
+        order_sql = "ai_score DESC, source_type, published DESC"
     else:
-        rows = conn.execute("""
-            SELECT *
-            FROM   articles
-            WHERE  created_at >= ?
-            ORDER  BY source_type, published DESC
-        """, (since,)).fetchall()
+        order_sql = "source_type, published DESC"
+
+    rows = conn.execute(f"""
+        SELECT *
+        FROM   articles
+        WHERE  {where_sql}
+        ORDER  BY {order_sql}
+    """, params).fetchall()
 
     conn.close()
     return [dict(row) for row in rows]
