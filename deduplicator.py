@@ -7,6 +7,10 @@ SOURCE_PRIORITY = {
     "fabricated_knowledge": 2,
 }
 
+# 標題是格式化字串（非自然語言）的來源：跳過標題相似度比對，一律放行。
+# 去重已由 database.py 的 URL 唯一性（sec_edgar）/ 年月唯一性（tw_revenue）保證。
+TITLE_SIMILARITY_EXEMPT_SOURCES = {"sec_edgar", "tw_revenue"}
+
 
 def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[dict]:
     """
@@ -14,6 +18,10 @@ def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[d
     When two articles are similar, keeps the one from the higher-priority source
     (sec_edgar > semianalysis > fabricated_knowledge > others).
     Prints dropped pairs for debug.
+
+    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES are always kept as-is:
+    their titles are formatted strings, not prose, so similarity comparison
+    is meaningless for them.
     """
     def priority_key(a):
         return SOURCE_PRIORITY.get(a.get("source_type", ""), 99)
@@ -23,6 +31,10 @@ def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[d
     kept_pairs: list[tuple[str, str]] = []  # (normalized_title, original_title)
 
     for article in sorted_articles:
+        if article.get("source_type") in TITLE_SIMILARITY_EXEMPT_SOURCES:
+            kept.append(article)
+            continue
+
         norm = article.get("title", "").lower().strip()
         best_ratio = 0.0
         matched_orig = None
@@ -48,11 +60,19 @@ def filter_against_db_titles(
     """
     Filter out articles whose title is highly similar to recently stored DB titles.
     Prints dropped pairs for debug.
+
+    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES are always kept as-is:
+    their titles are formatted strings, not prose, so similarity comparison
+    is meaningless for them.
     """
     norm_db_pairs = [(t.lower().strip(), t) for t in db_titles if t]
     filtered = []
 
     for article in articles:
+        if article.get("source_type") in TITLE_SIMILARITY_EXEMPT_SOURCES:
+            filtered.append(article)
+            continue
+
         norm = article.get("title", "").lower().strip()
         best_ratio = 0.0
         matched_db = None
