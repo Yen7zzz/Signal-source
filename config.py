@@ -12,22 +12,7 @@
 
 import os
 
-# ── AI 設定 ───────────────────────────────────────────────────
-# 評分改用 Anthropic Claude Haiku
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
-
-# 保留 Groq 設定（向下相容，rescore_fallback 等舊工具可能仍引用）
-GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL    = "llama-3.3-70b-versatile"
-
-# 評分門檻：低於此分數的文章不會出現在週報中
-AI_SCORE_THRESHOLD = 6
-
-# 全文抓取門檻：ai_score >= 此值才用 Jina AI 抓完整內文
-FULL_CONTENT_SCORE_THRESHOLD = 7
-
-# ── Evidence Pack 設定（規則式評分，取代 AI_SCORE_THRESHOLD 系列）───
+# ── Evidence Pack 設定（規則式評分）─────────────────────────────
 EVIDENCE_FULL_TEXT_THRESHOLD = 7    # >= 此分數內嵌 full_content
 EVIDENCE_SUMMARY_THRESHOLD   = 4    # >= 此分數內嵌 RSS summary
 EVIDENCE_FULL_TEXT_CHARS     = 1000 # full_content 內嵌字數上限
