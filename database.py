@@ -332,24 +332,35 @@ def get_recent_articles(
     min_score: int = None,
     include_junk: bool = False,
     min_rule_score: int | None = None,
+    since_utc: str | None = None,
+    until_utc: str | None = None,
 ) -> list[dict]:
     """
     撈取最近 N 天的文章，供 pipeline_digest.py 生成週報
 
     Args:
-        days:           撈幾天內的文章
+        days:           撈幾天內的文章（有傳 since_utc 時忽略）
         min_score:      最低 AI 評分門檻（None 表示不過濾，維持原行為不動）
         include_junk:   是否包含 is_junk = 1 的文章（預設 False，排除規則式判定的雜訊）
         min_rule_score: 最低 rule_score 門檻（None 表示不過濾）
+        since_utc:      窗口下界（含），UTC 'YYYY-MM-DD HH:MM:SS'，與 created_at 同格式
+        until_utc:      窗口上界（不含），UTC 'YYYY-MM-DD HH:MM:SS'；None 表示不設上界
 
     Returns:
         按 ai_score 降序排列的文章清單（含 rule_score、is_junk 欄位）
     """
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    if since_utc is None:
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    else:
+        since = since_utc
     conn  = get_connection()
 
     where_clauses = ["created_at >= ?"]
     params = [since]
+
+    if until_utc is not None:
+        where_clauses.append("created_at < ?")
+        params.append(until_utc)
 
     if min_score is not None:
         where_clauses.append("(ai_score >= ? OR ai_score IS NULL)")

@@ -17,7 +17,7 @@ import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from database import get_recent_articles
 from config import (
@@ -26,6 +26,9 @@ from config import (
     DIGEST_DAYS, SOURCE_META, SOURCE_ORDER,
     EVIDENCE_FULL_TEXT_THRESHOLD, EVIDENCE_SUMMARY_THRESHOLD, EVIDENCE_FULL_TEXT_CHARS,
 )
+
+# 台灣無日光節約時間，用固定 offset 即可（避免 zoneinfo 在 Windows 需額外裝 tzdata）
+TPE = timezone(timedelta(hours=8))
 
 os.makedirs("logs", exist_ok=True)
 os.makedirs("digests", exist_ok=True)
@@ -69,7 +72,7 @@ def send_email(md_path: str, stats: dict):
     receivers = [r.strip() for r in EMAIL_RECEIVERS.split(",") if r.strip()]
 
     total = stats.get("total", 0)
-    subject_date = datetime.now().strftime("%Y/%m/%d")
+    subject_date = stats["date"].replace("-", "/")
 
     body_lines = [
         f"Signal-Source Evidence Pack",
@@ -246,16 +249,45 @@ def render_evidence_pack(articles: list[dict], stats: dict) -> str:
     return "\n".join(lines)
 
 
-def run(dry_run: bool = False):
+def _period_bounds(ref_date: str | None = None) -> tuple[datetime, datetime]:
+    """
+    算出本期窗口 [period_start, period_end)（皆為台灣時間 aware datetime）。
+    period_end = 參考時間（預設台灣現在，或 --date 指定日）往回對齊到該週週一 00:00，
+    period_start = period_end − DIGEST_DAYS。半開區間讓連續兩期無縫接續，
+    與 digest 實際執行時間（GitHub cron 延遲）無關。
+    """
+    if ref_date:
+        ref = datetime.strptime(ref_date, "%Y-%m-%d").replace(tzinfo=TPE)
+    else:
+        ref = datetime.now(TPE)
+    midnight = ref.replace(hour=0, minute=0, second=0, microsecond=0)
+    period_end = midnight - timedelta(days=midnight.weekday())
+    period_start = period_end - timedelta(days=DIGEST_DAYS)
+    return period_start, period_end
+
+
+def _to_utc_str(dt: datetime) -> str:
+    """轉成與 SQLite created_at 相同的 UTC 格式 'YYYY-MM-DD HH:MM:SS'"""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def run(dry_run: bool = False, ref_date: str | None = None):
+    period_start, period_end = _period_bounds(ref_date)
+    since_utc = _to_utc_str(period_start)
+    until_utc = _to_utc_str(period_end)
+
     print(f"\n{'='*55}")
-    print(f"📊 Pipeline Digest 開始 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"📊 Pipeline Digest 開始 — {datetime.now(TPE).strftime('%Y-%m-%d %H:%M')}（台灣）")
+    print(f"   窗口（台灣）：{period_start.strftime('%Y-%m-%d %H:%M')} ~ {period_end.strftime('%Y-%m-%d %H:%M')}")
+    print(f"   窗口（UTC） ：{since_utc} ~ {until_utc}（半開區間）")
     print(f"{'='*55}")
 
-    articles = get_recent_articles(days=DIGEST_DAYS)
+    articles = get_recent_articles(since_utc=since_utc, until_utc=until_utc)
     print(f"\n📦 本期收集：{len(articles)} 篇（已排除 is_junk=1，未傳 min_score）")
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    since = (datetime.now() - timedelta(days=DIGEST_DAYS)).strftime("%Y-%m-%d")
+    today = period_end.strftime("%Y-%m-%d")
+    since = period_start.strftime("%Y-%m-%d")
+    end   = (period_end - timedelta(days=1)).strftime("%Y-%m-%d")
 
     full_count = sum(1 for a in articles if a.get("content_completeness") == "full")
     coverage   = (full_count / len(articles) * 100) if articles else 0.0
@@ -273,7 +305,7 @@ def run(dry_run: bool = False):
     stats = {
         "date":  today,
         "start": since,
-        "end":   today,
+        "end":   end,
         "total": len(articles),
         "full_text_coverage_pct": coverage,
         "high_count": len(high),
@@ -303,5 +335,7 @@ def run(dry_run: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="只產生 markdown 預覽，不寄信、不寫 DB")
+    parser.add_argument("--date", metavar="YYYY-MM-DD",
+                        help="參考日期（台灣），往回對齊到該週週一作為期末；預設為台灣今天")
     args = parser.parse_args()
-    run(dry_run=args.dry_run)
+    run(dry_run=args.dry_run, ref_date=args.date)
