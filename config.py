@@ -81,7 +81,7 @@ WATCHLIST = {
 
 # SemiAnalysis — Substack 公開 RSS
 # 只有免費文章，付費文章需手動餵入（見 README）
-SEMIANALYSIS_RSS = "https://www.semianalysis.com/feed"
+SEMIANALYSIS_RSS = "https://newsletter.semianalysis.com/feed"
 
 # ── 半導體 / 技術媒體 RSS（新增）─────────────────────────────
 # 需要關鍵字過濾（混合內容站）
