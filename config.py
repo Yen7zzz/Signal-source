@@ -94,12 +94,13 @@ SERVE_THE_HOME_RSS     = "https://www.servethehome.com/feed/"
 NEXT_PLATFORM_RSS      = "https://www.nextplatform.com/feed/"
 FABRICATED_KNOWLEDGE_RSS = "https://www.fabricatedknowledge.com/feed"
 
-# TrendForce — 公開新聞頁面（爬蟲）
+# TrendForce — 公開新聞頁面（爬蟲，抓第 1、2 頁，不做關鍵字過濾，交由 rule_score 分層）
 TRENDFORCE_NEWS_URL = "https://www.trendforce.com/news/"
-TRENDFORCE_KEYWORDS = [
-    "HBM", "DRAM", "NAND", "memory", "semiconductor",
-    "CoWoS", "packaging", "wafer", "CapEx", "capacity",
-    "Micron", "Samsung", "SK Hynix", "TSMC", "NVIDIA",
+
+# 標題去重豁免：固定格式的系列文（每期數據不同，但標題相似度常 > 0.6 被誤擋）
+# 以 re.match 比對標題開頭；真正的重複仍由 DB 的 URL 唯一性擋住
+TITLE_SIMILARITY_EXEMPT_PATTERNS = [
+    r"^\[Insights\] Memory Spot Price Update:",
 ]
 
 # DIGITIMES — RSS

@@ -13,7 +13,7 @@ import logging
 import os
 from datetime import datetime
 from database import (
-    init_db, save_article, article_exists,
+    init_db, save_article, article_exists, get_urls_by_source,
     save_tw_revenue, get_recent_titles, update_content_completeness,
     update_rule_score, update_full_content,
 )
@@ -54,7 +54,8 @@ def run():
     # 第三欄 skip_ai：True 表示跳過 Jina 全文抓取 + 規則式評分（月營收已自行計算分數）
     sources = [
         ("SemiAnalysis",           fetch_semianalysis,          False),
-        ("TrendForce",             fetch_trendforce,             False),
+        # TrendForce 傳入已入庫 URL，在抓文章頁摘要前就先跳過
+        ("TrendForce",             lambda: fetch_trendforce(known_urls=get_urls_by_source("trendforce")), False),
         ("DIGITIMES",              fetch_digitimes,              False),
         ("SEC EDGAR",              fetch_sec_edgar,              False),
         ("Semiconductor Eng.",     fetch_semi_engineering,       False),

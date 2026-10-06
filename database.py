@@ -116,6 +116,16 @@ def article_exists(url: str) -> bool:
     return row is not None
 
 
+def get_urls_by_source(source_type: str) -> set[str]:
+    """撈取某來源所有已入庫 URL，供 fetcher 在抓文章頁前先跳過"""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT url FROM articles WHERE source_type = ?", (source_type,)
+    ).fetchall()
+    conn.close()
+    return {row["url"] for row in rows}
+
+
 def save_article(
     source_type:  str,
     title:        str,

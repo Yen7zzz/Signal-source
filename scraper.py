@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from config import (
     SEMIANALYSIS_RSS,
-    TRENDFORCE_NEWS_URL, TRENDFORCE_KEYWORDS,
+    TRENDFORCE_NEWS_URL,
     DIGITIMES_RSS,
     WATCHLIST,
     SEC_FILING_TYPES, SEC_USER_AGENT, SEC_8K_VALUABLE_ITEMS,
@@ -125,59 +125,106 @@ def _fetch_trendforce_summary(article_url: str) -> str:
     return ""
 
 
-def fetch_trendforce() -> list[dict]:
-    """
-    爬取 TrendForce 公開新聞，關鍵字過濾後進入文章抓摘要
+# 只收文章頁：/news/YYYY/MM/DD/slug/（排除分類頁、分頁、/news/ 首頁）
+# URL 上的日期是台灣日期，直接當 published（僅供顯示，週報窗口用 created_at）
+TRENDFORCE_ARTICLE_URL_RE = re.compile(
+    r"^https://www\.trendforce\.com/news/(\d{4})/(\d{2})/(\d{2})/[^/]+/$"
+)
 
-    注意：每篇文章多一次 HTTP 請求，整體稍慢
-    但換來有意義的 summary，對 Gemini 分析幫助大
+
+def _parse_trendforce_list(html: str) -> tuple[list[tuple[str, str, str]], str | None]:
     """
+    解析 TrendForce 列表頁
+    回傳 ([(url, title, published), ...], 下一頁 URL 或 None)
+    列表（每頁 5 篇）與輪播都會收，只用 URL 格式判斷是否為文章
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    items = []
+    seen_urls = set()
+
+    for link in soup.select("a[href*='/news/']"):
+        title = link.get_text(strip=True)
+        href = link.get("href", "")
+
+        # 同一篇文章有圖片、標題、more 多個連結，只取有標題文字的那個
+        if not title or len(title) < 10:
+            continue
+
+        url = f"https://www.trendforce.com{href}" if href.startswith("/") else href
+        m = TRENDFORCE_ARTICLE_URL_RE.match(url)
+        if not m or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        items.append((url, title, f"{m.group(1)}-{m.group(2)}-{m.group(3)}"))
+
+    next_link = next(
+        (a for a in soup.find_all("a", href=True) if a.get_text(strip=True) == "Next Page"),
+        None,
+    )
+    return items, (next_link["href"] if next_link else None)
+
+
+def fetch_trendforce(known_urls: set[str] | None = None) -> list[dict]:
+    """
+    爬取 TrendForce 公開新聞第 1、2 頁，進入文章抓摘要
+
+    - 不做關鍵字過濾，交由 rule_score 分層
+    - known_urls（已入庫 URL）在抓摘要前就跳過，省掉重複的文章頁請求
+    - 不套用 MAX_ARTICLES_PER_SOURCE，兩頁即硬上限
+    """
+    known_urls = known_urls or set()
     articles = []
+    candidates = []
+    seen_urls = set()
+    skipped = 0
+
     try:
         resp = requests.get(TRENDFORCE_NEWS_URL, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        news_links = soup.select("a[href*='/news/']")
-        seen_urls = set()
-
-        for link in news_links:
-            title = link.get_text(strip=True)
-            href = link.get("href", "")
-
-            if not title or len(title) < 10:
-                continue
-
-            url = f"https://www.trendforce.com{href}" if href.startswith("/") else href
-            if not url.startswith("http") or url in seen_urls:
-                continue
-            seen_urls.add(url)
-
-            # ★ 改動：用統一的 _is_relevant 判斷，邏輯更嚴格
-            if not _is_relevant(title, TRENDFORCE_KEYWORDS):
-                continue
-
-            # ★ 改動：進入文章抓摘要（加 0.3s 延遲避免被封）
-            summary = _fetch_trendforce_summary(url)
-            time.sleep(0.3)
-
-            articles.append({
-                "source_type": "trendforce",
-                "title": title,
-                "url": url,
-                "summary": summary,
-                "source": "TrendForce",
-                "published": datetime.now().strftime("%Y-%m-%d"),
-                "ticker": "",
-                "filing_type": "",
-            })
-
-            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
-                break
-
-        logger.info(f"TrendForce: {len(articles)} 篇")
+        page_items, next_url = _parse_trendforce_list(resp.text)
     except Exception as e:
         logger.error(f"TrendForce 失敗: {e}")
+        return articles
+    candidates.extend(page_items)
+
+    # 第 2 頁失敗不影響第 1 頁的結果
+    if next_url:
+        try:
+            resp = requests.get(next_url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            page_items, _ = _parse_trendforce_list(resp.text)
+            candidates.extend(page_items)
+        except Exception as e:
+            logger.warning(f"TrendForce 第 2 頁失敗，只用第 1 頁: {e}")
+    else:
+        logger.warning("TrendForce 找不到 Next Page 連結，只用第 1 頁")
+
+    for url, title, published in candidates:
+        # 輪播文章在兩頁都會出現
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
+        if url in known_urls:
+            skipped += 1
+            continue
+
+        # 進入文章抓摘要（加 0.3s 延遲避免被封）
+        summary = _fetch_trendforce_summary(url)
+        time.sleep(0.3)
+
+        articles.append({
+            "source_type": "trendforce",
+            "title": title,
+            "url": url,
+            "summary": summary,
+            "source": "TrendForce",
+            "published": published,
+            "ticker": "",
+            "filing_type": "",
+        })
+
+    logger.info(f"TrendForce: {len(articles)} 篇（已入庫跳過 {skipped} 篇）")
     return articles
 
 

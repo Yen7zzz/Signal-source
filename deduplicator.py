@@ -1,4 +1,7 @@
+import re
 from difflib import SequenceMatcher
+
+from config import TITLE_SIMILARITY_EXEMPT_PATTERNS
 
 # Lower number = higher priority when deduplicating within a batch
 SOURCE_PRIORITY = {
@@ -11,6 +14,16 @@ SOURCE_PRIORITY = {
 # 去重已由 database.py 的 URL 唯一性（sec_edgar）/ 年月唯一性（tw_revenue）保證。
 TITLE_SIMILARITY_EXEMPT_SOURCES = {"sec_edgar", "tw_revenue"}
 
+# 固定格式的系列文（例如每週 Memory Spot Price Update）：依標題開頭豁免，清單在 config.py
+_EXEMPT_TITLE_RES = [re.compile(p) for p in TITLE_SIMILARITY_EXEMPT_PATTERNS]
+
+
+def _is_exempt(article: dict) -> bool:
+    if article.get("source_type") in TITLE_SIMILARITY_EXEMPT_SOURCES:
+        return True
+    title = article.get("title", "")
+    return any(r.match(title) for r in _EXEMPT_TITLE_RES)
+
 
 def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[dict]:
     """
@@ -19,9 +32,9 @@ def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[d
     (sec_edgar > semianalysis > fabricated_knowledge > others).
     Prints dropped pairs for debug.
 
-    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES are always kept as-is:
-    their titles are formatted strings, not prose, so similarity comparison
-    is meaningless for them.
+    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES, or whose title matches
+    TITLE_SIMILARITY_EXEMPT_PATTERNS, are always kept as-is: their titles are
+    formatted strings, not prose, so similarity comparison is meaningless for them.
     """
     def priority_key(a):
         return SOURCE_PRIORITY.get(a.get("source_type", ""), 99)
@@ -31,7 +44,7 @@ def deduplicate_by_title(articles: list[dict], threshold: float = 0.6) -> list[d
     kept_pairs: list[tuple[str, str]] = []  # (normalized_title, original_title)
 
     for article in sorted_articles:
-        if article.get("source_type") in TITLE_SIMILARITY_EXEMPT_SOURCES:
+        if _is_exempt(article):
             kept.append(article)
             continue
 
@@ -61,15 +74,15 @@ def filter_against_db_titles(
     Filter out articles whose title is highly similar to recently stored DB titles.
     Prints dropped pairs for debug.
 
-    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES are always kept as-is:
-    their titles are formatted strings, not prose, so similarity comparison
-    is meaningless for them.
+    Articles from TITLE_SIMILARITY_EXEMPT_SOURCES, or whose title matches
+    TITLE_SIMILARITY_EXEMPT_PATTERNS, are always kept as-is: their titles are
+    formatted strings, not prose, so similarity comparison is meaningless for them.
     """
     norm_db_pairs = [(t.lower().strip(), t) for t in db_titles if t]
     filtered = []
 
     for article in articles:
-        if article.get("source_type") in TITLE_SIMILARITY_EXEMPT_SOURCES:
+        if _is_exempt(article):
             filtered.append(article)
             continue
 
