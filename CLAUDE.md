@@ -71,3 +71,11 @@ Table `articles`: `id`, `source_type`, `ticker`, `filing_type`, `title`, `url` (
 - **Fail-safe design:** Errors in any single source or article don't abort the pipeline; failures are logged and skipped.
 - **Korean stocks (SK Hynix, Samsung) have no SEC CIK** — they're in WATCHLIST for Seeking Alpha RSS but skipped in SEC EDGAR fetching.
 - **Scoring threshold** (`SCORE_THRESHOLD = 6` in config) filters the digest. Scores below threshold are stored but not emailed.
+
+
+## Branch 規則
+
+- `dev` 是預設 branch，也是唯一在運作的 branch。GitHub Actions（collect.yml、digest.yml）只在 `dev` 上執行，bot 每天把 DB commit 回 `dev`。
+- Cloud session 只推到 session 被允許的 branch，不要嘗試推其他 branch，也不要用 API 繞過限制。如果允許的 branch 不是 `dev`，完成後由使用者建立 PR，合併到 `dev`。
+- PR 不能包含 `data/industry_radar.db` 的變更（二進位檔，合併時選錯一邊就會被舊版本覆蓋）。需要修改 DB 時，另外寫腳本，由使用者在本機、在 UTC 12:00～23:00 之間執行。
+- `main` 已經存檔為 tag `archive/main-2026-03-27`（commit 49af4ec），不要重新建立 `main`。
