@@ -7,15 +7,17 @@
 #   → update DB rule_score / is_junk（ai_score / ai_summary 對新文章一律留 NULL）
 #   → not junk 的文章才用 Jina 抓全文
 #   → update DB full_content
+#   → 每個來源寫一列 collect_runs（抓取統計，供來源健康檢查；在 finally 統一寫入）
 # ============================================================
 
 import logging
 import os
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
 from database import (
     init_db, save_article, article_exists, get_urls_by_source,
     save_tw_revenue, get_recent_titles, update_content_completeness,
-    update_rule_score, update_full_content,
+    update_rule_score, update_full_content, save_collect_runs,
 )
 from deduplicator import deduplicate_by_title, filter_against_db_titles
 from scraper import (
@@ -29,6 +31,7 @@ from scraper import (
     fetch_serve_the_home,
     fetch_next_platform,
     fetch_fabricated_knowledge,
+    ERROR_MSG_MAX_LEN,
 )
 from scraper_twstock import fetch_tw_revenue_all
 from content_fetcher import batch_fetch, classify_completeness
@@ -43,6 +46,25 @@ logging.basicConfig(
 )
 
 
+def _new_run_row(run_at: str, source_type: str) -> dict:
+    """collect_runs 一列的預設值；fetcher 透過 stats 填入抓取統計，其餘由 pipeline 補上"""
+    return {
+        "run_at": run_at, "source_type": source_type, "status": "ok", "error_msg": None,
+        "http_status": None, "redirect_to": None, "raw_count": None, "passed_filter": None,
+        "returned": None, "after_url_dedup": None, "after_title_dedup": None, "inserted": None,
+        "feed_newest_published": None, "feed_oldest_published": None,
+    }
+
+
+def _count_only(fetch_fn):
+    """不接 stats 的 fetcher（SEC EDGAR、台股月營收）：只記回傳篇數"""
+    def wrapped(stats: dict) -> list[dict]:
+        articles = fetch_fn()
+        stats["raw_count"] = stats["returned"] = len(articles)
+        return articles
+    return wrapped
+
+
 def run():
     print(f"\n{'='*55}")
     print(f"📡 Pipeline Collect 開始 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -50,39 +72,66 @@ def run():
 
     init_db()
 
-    # 所有資料源統一在這裡定義
-    # 第三欄 skip_ai：True 表示跳過 Jina 全文抓取 + 規則式評分（月營收已自行計算分數）
+    # 同一次執行的所有 collect_runs 列共用 run_at，格式與 created_at 相同（UTC）
+    run_at   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    run_rows = {}  # source_type → collect_runs 一列
+
+    try:
+        _collect(run_at, run_rows)
+    finally:
+        # 不論中途是否出錯都寫入；寫入失敗只 log，不中斷 collect
+        if run_rows and not save_collect_runs(list(run_rows.values())):
+            print("   ⚠️ collect_runs 寫入失敗（詳見 log）")
+
+
+def _collect(run_at: str, run_rows: dict):
+    # 所有資料源統一在這裡定義，fetch_fn 都接收 stats dict（collect_runs 統計）
+    # 第四欄 skip_ai：True 表示跳過 Jina 全文抓取 + 規則式評分（月營收已自行計算分數）
     sources = [
-        ("SemiAnalysis",           fetch_semianalysis,          False),
+        ("SemiAnalysis",           "semianalysis",         fetch_semianalysis,          False),
         # TrendForce 傳入已入庫 URL，在抓文章頁摘要前就先跳過
-        ("TrendForce",             lambda: fetch_trendforce(known_urls=get_urls_by_source("trendforce")), False),
-        ("DIGITIMES",              fetch_digitimes,              False),
-        ("SEC EDGAR",              fetch_sec_edgar,              False),
-        ("Semiconductor Eng.",     fetch_semi_engineering,       False),
-        ("EE Times",               fetch_eetimes,                False),
-        ("Tom's Hardware",         fetch_toms_hardware,          False),
-        ("ServeTheHome",           fetch_serve_the_home,         False),
-        ("Next Platform",          fetch_next_platform,          False),
-        ("Fabricated Knowledge",   fetch_fabricated_knowledge,   False),
-        ("台股月營收",             fetch_tw_revenue_all,         True),
+        ("TrendForce",             "trendforce",
+            lambda stats: fetch_trendforce(known_urls=get_urls_by_source("trendforce"), stats=stats), False),
+        ("DIGITIMES",              "digitimes",            fetch_digitimes,             False),
+        ("SEC EDGAR",              "sec_edgar",            _count_only(fetch_sec_edgar), False),
+        ("Semiconductor Eng.",     "semi_engineering",     fetch_semi_engineering,      False),
+        ("EE Times",               "eetimes",              fetch_eetimes,               False),
+        ("Tom's Hardware",         "toms_hardware",        fetch_toms_hardware,         False),
+        ("ServeTheHome",           "serve_the_home",       fetch_serve_the_home,        False),
+        ("Next Platform",          "next_platform",        fetch_next_platform,         False),
+        ("Fabricated Knowledge",   "fabricated_knowledge", fetch_fabricated_knowledge,  False),
+        ("台股月營收",             "tw_revenue",           _count_only(fetch_tw_revenue_all), True),
     ]
 
     total_fetched    = 0
     total_new        = 0
     all_new_articles = []  # 非 skip_ai 來源統一收集，後續批次去重+評分
 
-    for source_name, fetch_fn, skip_ai in sources:
+    for source_name, source_type, fetch_fn, skip_ai in sources:
         print(f"\n{'─'*40}")
         print(f"📥 抓取 {source_name}...")
 
+        row = run_rows[source_type] = _new_run_row(run_at, source_type)
         try:
-            articles = fetch_fn()
+            stats = {}
+            try:
+                articles = fetch_fn(stats=stats)
+            finally:
+                row.update({k: v for k, v in stats.items() if k in row})
             print(f"   取得 {len(articles)} 篇")
+            if row["status"] == "error":
+                print(f"   ⚠️ {source_name} 抓取異常：{row['error_msg']}")
 
             # URL 去重：過濾掉已存在的文章
             new_articles = [a for a in articles if not article_exists(a["url"])]
             total_fetched += len(articles)
             print(f"   新文章：{len(new_articles)} 篇（重複跳過 {len(articles) - len(new_articles)} 篇）")
+
+            row["after_url_dedup"] = len(new_articles)
+            row["inserted"] = 0
+            # 月營收不走標題去重，after_title_dedup 留 NULL 表示不適用
+            if not skip_ai:
+                row["after_title_dedup"] = 0
 
             if not new_articles:
                 continue
@@ -103,6 +152,7 @@ def run():
                     if success:
                         saved += 1
                         total_new += 1
+                        row["inserted"] += 1
 
                     if revenue_meta:
                         save_tw_revenue(
@@ -118,6 +168,8 @@ def run():
         except Exception as e:
             logging.error(f"{source_name} 執行失敗: {e}")
             print(f"   ❌ {source_name} 失敗：{e}")
+            row["status"] = "error"
+            row["error_msg"] = repr(e)[:ERROR_MSG_MAX_LEN]
 
     # ── 批次處理所有非 skip_ai 來源 ──────────────────────────
     if all_new_articles:
@@ -136,6 +188,10 @@ def run():
         all_new_articles = deduplicate_by_title(all_new_articles)
         print(f"   批次內去重：移除 {before_intra - len(all_new_articles)} 篇，剩 {len(all_new_articles)} 篇")
 
+        for source_type, n in Counter(a["source_type"] for a in all_new_articles).items():
+            if source_type in run_rows:
+                run_rows[source_type]["after_title_dedup"] = n
+
         if all_new_articles:
             # Step 1：存入 DB
             saved = 0
@@ -144,6 +200,8 @@ def run():
                 if success:
                     saved += 1
                     total_new += 1
+                    if article["source_type"] in run_rows:
+                        run_rows[article["source_type"]]["inserted"] += 1
             print(f"\n   ✅ 新增 {saved} 篇進資料庫")
 
             # Step 2：規則式評分（純標題比對，不呼叫任何 AI API）

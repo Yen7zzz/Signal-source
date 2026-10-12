@@ -9,12 +9,13 @@
 #   5. 新增跨源頭標題去重（同一新聞多源報導只保留一筆）
 # ============================================================
 
+import calendar
 import feedparser
 import requests
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from config import (
     SEMIANALYSIS_RSS,
@@ -57,6 +58,61 @@ def _clean_html(text: str, max_len: int = 600) -> str:
     return re.sub(r"<[^>]+>", "", text or "").strip()[:max_len]
 
 
+# ── 來源健康統計（collect_runs）──────────────────────────────
+# fetcher 都接受選填的 stats dict，有傳就把抓取統計填進去，回傳的文章 list 不受影響。
+# feedparser 的實際行為（tests/test_feedparser_redirect.py 釘住）：
+#   301/302/307 → status 是轉址碼、href 是最終網址；308 → status 200、href 是最終網址；
+#   連線失敗 → 沒有 status 也沒有 href，bozo_exception 是 URLError，不會丟例外
+ERROR_MSG_MAX_LEN = 500
+
+
+def _fill_stats(stats: dict | None, **values):
+    if stats is not None:
+        stats.update(values)
+
+
+def _to_utc_str(dt: datetime) -> str:
+    """轉成與 SQLite created_at 相同的 UTC 格式 'YYYY-MM-DD HH:MM:SS'"""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _feed_meta(feed, configured_url: str) -> dict:
+    """
+    從 feedparser 結果整理 collect_runs 欄位。
+    error 判定：http_status >= 400，或 raw_count == 0（不論 bozo）；
+    轉址（含 308）不算 error，只記 http_status / redirect_to。
+    """
+    http_status = feed.get("status")
+    href = feed.get("href")
+    raw_count = len(feed.entries)
+
+    # 取全體最大 / 最小值而非第一筆：有些 feed 不是依時間排序（如 Next Platform）
+    times = []
+    for entry in feed.entries:
+        parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+        if parsed:
+            times.append(datetime.fromtimestamp(calendar.timegm(parsed), tz=timezone.utc))
+
+    status, error_msg = "ok", None
+    if http_status is not None and http_status >= 400:
+        status, error_msg = "error", f"HTTP {http_status}"
+    elif raw_count == 0:
+        status = "error"
+        error_msg = "feed 0 條目"
+        if feed.get("bozo_exception") is not None:
+            error_msg += f": {feed.bozo_exception!r}"
+
+    return {
+        "status":                status,
+        "error_msg":             error_msg[:ERROR_MSG_MAX_LEN] if error_msg else None,
+        "http_status":           http_status,
+        "redirect_to":           href if href and href != configured_url else None,
+        "raw_count":             raw_count,
+        "feed_newest_published": _to_utc_str(max(times)) if times else None,
+        "feed_oldest_published": _to_utc_str(min(times)) if times else None,
+    }
+
+
 def _is_relevant(text: str, keywords: list[str] = None) -> bool:
     """
     判斷文字是否與半導體產業相關
@@ -68,7 +124,7 @@ def _is_relevant(text: str, keywords: list[str] = None) -> bool:
 
 
 # ── 1. SemiAnalysis ───────────────────────────────────────────
-def fetch_semianalysis() -> list[dict]:
+def fetch_semianalysis(stats: dict | None = None) -> list[dict]:
     """
     透過 Substack RSS 抓取 SemiAnalysis 的公開文章
     付費文章只顯示標題，但標題本身已有情報價值
@@ -76,6 +132,7 @@ def fetch_semianalysis() -> list[dict]:
     articles = []
     try:
         feed = feedparser.parse(SEMIANALYSIS_RSS)
+        _fill_stats(stats, **_feed_meta(feed, SEMIANALYSIS_RSS))
         for entry in feed.entries[:MAX_ARTICLES_PER_SOURCE]:
             title = entry.get("title", "").strip()
             url = entry.get("link", "").strip()
@@ -95,6 +152,8 @@ def fetch_semianalysis() -> list[dict]:
         logger.info(f"SemiAnalysis: {len(articles)} 篇")
     except Exception as e:
         logger.error(f"SemiAnalysis 失敗: {e}")
+        _fill_stats(stats, status="error", error_msg=repr(e)[:ERROR_MSG_MAX_LEN])
+    _fill_stats(stats, passed_filter=None, returned=len(articles))
     return articles
 
 
@@ -164,40 +223,75 @@ def _parse_trendforce_list(html: str) -> tuple[list[tuple[str, str, str]], str |
     return items, (next_link["href"] if next_link else None)
 
 
-def fetch_trendforce(known_urls: set[str] | None = None) -> list[dict]:
+def _trendforce_date_to_utc(date_str: str) -> str:
+    """URL 上的台灣日期 → 該日台灣 00:00 的 UTC 字串"""
+    tpe = timezone(timedelta(hours=8))
+    return _to_utc_str(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tpe))
+
+
+def fetch_trendforce(known_urls: set[str] | None = None, stats: dict | None = None) -> list[dict]:
     """
     爬取 TrendForce 公開新聞第 1、2 頁，進入文章抓摘要
 
     - 不做關鍵字過濾，交由 rule_score 分層
     - known_urls（已入庫 URL）在抓摘要前就跳過，省掉重複的文章頁請求
     - 不套用 MAX_ARTICLES_PER_SOURCE，兩頁即硬上限
+    - stats：第 1 頁失敗或解析 0 篇記 error；第 2 頁失敗或解析 0 篇仍是 ok，原因寫在 error_msg
     """
     known_urls = known_urls or set()
     articles = []
     candidates = []
     seen_urls = set()
     skipped = 0
+    _fill_stats(stats, passed_filter=None, returned=0)
 
     try:
         resp = requests.get(TRENDFORCE_NEWS_URL, headers=HEADERS, timeout=15)
+        # 與 feedparser 一致：有轉址時記第一段的轉址碼
+        history = getattr(resp, "history", None) or []
+        final_url = getattr(resp, "url", None)
+        _fill_stats(
+            stats,
+            http_status=history[0].status_code if history else getattr(resp, "status_code", None),
+            redirect_to=final_url if final_url and final_url != TRENDFORCE_NEWS_URL else None,
+        )
         resp.raise_for_status()
         page_items, next_url = _parse_trendforce_list(resp.text)
     except Exception as e:
         logger.error(f"TrendForce 失敗: {e}")
+        _fill_stats(stats, status="error", error_msg=repr(e)[:ERROR_MSG_MAX_LEN])
         return articles
     candidates.extend(page_items)
+    # HTML 改版時 HTTP 仍是 200，但 parser 會靜默回傳 0 篇 → 第 1 頁 0 篇記 error
+    page_1_count = len(page_items)
 
     # 第 2 頁失敗不影響第 1 頁的結果
+    page_2_note = None
     if next_url:
         try:
             resp = requests.get(next_url, headers=HEADERS, timeout=15)
             resp.raise_for_status()
             page_items, _ = _parse_trendforce_list(resp.text)
             candidates.extend(page_items)
+            if not page_items:
+                page_2_note = "第 2 頁解析 0 篇"
         except Exception as e:
             logger.warning(f"TrendForce 第 2 頁失敗，只用第 1 頁: {e}")
+            page_2_note = f"第 2 頁失敗，只用第 1 頁: {e!r}"
     else:
         logger.warning("TrendForce 找不到 Next Page 連結，只用第 1 頁")
+        page_2_note = "找不到 Next Page 連結，只用第 1 頁"
+
+    dates = [published for _, _, published in candidates]
+    _fill_stats(
+        stats,
+        status="ok" if page_1_count else "error",
+        error_msg=("列表頁解析 0 篇" if not page_1_count
+                   else page_2_note[:ERROR_MSG_MAX_LEN] if page_2_note else None),
+        raw_count=len({url for url, _, _ in candidates}),
+        feed_newest_published=_trendforce_date_to_utc(max(dates)) if dates else None,
+        feed_oldest_published=_trendforce_date_to_utc(min(dates)) if dates else None,
+    )
 
     for url, title, published in candidates:
         # 輪播文章在兩頁都會出現
@@ -225,11 +319,12 @@ def fetch_trendforce(known_urls: set[str] | None = None) -> list[dict]:
         })
 
     logger.info(f"TrendForce: {len(articles)} 篇（已入庫跳過 {skipped} 篇）")
+    _fill_stats(stats, returned=len(articles))
     return articles
 
 
 # ── 3. DIGITIMES（加上關鍵字過濾）────────────────────────────
-def fetch_digitimes() -> list[dict]:
+def fetch_digitimes(stats: dict | None = None) -> list[dict]:
     """
     透過 RSS 抓取 DIGITIMES，加上半導體關鍵字過濾
 
@@ -237,8 +332,10 @@ def fetch_digitimes() -> list[dict]:
     過濾掉：手機評測、政治新聞、電動車、消費電子雜訊
     """
     articles = []
+    passed = 0
     try:
         feed = feedparser.parse(DIGITIMES_RSS)
+        _fill_stats(stats, **_feed_meta(feed, DIGITIMES_RSS))
         for entry in feed.entries:
             title = entry.get("title", "").strip()
             url = entry.get("link", "").strip()
@@ -249,6 +346,11 @@ def fetch_digitimes() -> list[dict]:
 
             # ★ 改動：標題或摘要包含關鍵字才保留
             if not _is_relevant(title + " " + summary):
+                continue
+
+            # 超過上限後只計數（passed_filter），不再收、也不發任何請求
+            passed += 1
+            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
                 continue
 
             articles.append({
@@ -262,12 +364,11 @@ def fetch_digitimes() -> list[dict]:
                 "filing_type": "",
             })
 
-            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
-                break
-
         logger.info(f"DIGITIMES: {len(articles)} 篇（關鍵字過濾後）")
     except Exception as e:
         logger.error(f"DIGITIMES 失敗: {e}")
+        _fill_stats(stats, status="error", error_msg=repr(e)[:ERROR_MSG_MAX_LEN])
+    _fill_stats(stats, passed_filter=passed, returned=len(articles))
     return articles
 
 
@@ -452,6 +553,7 @@ def _fetch_rss(
     source_type: str,
     source_label: str,
     filter_keywords: bool = False,
+    stats: dict | None = None,
 ) -> list[dict]:
     """
     通用 RSS fetcher，供下方 6 個媒體源共用。
@@ -461,10 +563,13 @@ def _fetch_rss(
         source_type:      articles 表的 source_type 欄位值
         source_label:     顯示用的來源名稱
         filter_keywords:  True → 用 _is_relevant() 過濾非半導體內容
+        stats:            有傳就填入 collect_runs 統計（passed_filter 只有過濾型來源才有值）
     """
     articles = []
+    passed = 0
     try:
         feed = feedparser.parse(rss_url)
+        _fill_stats(stats, **_feed_meta(feed, rss_url))
         for entry in feed.entries:
             title   = entry.get("title", "").strip()
             url     = entry.get("link", "").strip()
@@ -474,6 +579,11 @@ def _fetch_rss(
                 continue
 
             if filter_keywords and not _is_relevant(title + " " + summary):
+                continue
+
+            # 超過上限後只計數（passed_filter），不再收、也不發任何請求
+            passed += 1
+            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
                 continue
 
             articles.append({
@@ -487,70 +597,75 @@ def _fetch_rss(
                 "filing_type": "",
             })
 
-            if len(articles) >= MAX_ARTICLES_PER_SOURCE:
-                break
-
         logger.info(f"{source_label}: {len(articles)} 篇")
     except Exception as e:
         logger.error(f"{source_label} 失敗: {e}")
+        _fill_stats(stats, status="error", error_msg=repr(e)[:ERROR_MSG_MAX_LEN])
+    _fill_stats(stats, passed_filter=passed if filter_keywords else None, returned=len(articles))
     return articles
 
 
-def fetch_semi_engineering() -> list[dict]:
+def fetch_semi_engineering(stats: dict | None = None) -> list[dict]:
     """Semiconductor Engineering — 混合站，需關鍵字過濾"""
     return _fetch_rss(
         SEMI_ENGINEERING_RSS,
         source_type="semi_engineering",
         source_label="Semiconductor Engineering",
         filter_keywords=True,
+        stats=stats,
     )
 
 
-def fetch_eetimes() -> list[dict]:
+def fetch_eetimes(stats: dict | None = None) -> list[dict]:
     """EE Times — 混合站，需關鍵字過濾"""
     return _fetch_rss(
         EETIMES_RSS,
         source_type="eetimes",
         source_label="EE Times",
         filter_keywords=True,
+        stats=stats,
     )
 
 
-def fetch_toms_hardware() -> list[dict]:
+def fetch_toms_hardware(stats: dict | None = None) -> list[dict]:
     """Tom's Hardware — 混合站（含消費電子），需關鍵字過濾"""
     return _fetch_rss(
         TOMS_HARDWARE_RSS,
         source_type="toms_hardware",
         source_label="Tom's Hardware",
         filter_keywords=True,
+        stats=stats,
     )
 
 
-def fetch_serve_the_home() -> list[dict]:
+def fetch_serve_the_home(stats: dict | None = None) -> list[dict]:
     """ServeTheHome — 聚焦伺服器 / 資料中心，不需過濾"""
     return _fetch_rss(
         SERVE_THE_HOME_RSS,
         source_type="serve_the_home",
         source_label="ServeTheHome",
         filter_keywords=False,
+        stats=stats,
     )
 
 
-def fetch_next_platform() -> list[dict]:
+def fetch_next_platform(stats: dict | None = None) -> list[dict]:
     """Next Platform — 聚焦 HPC / 資料中心，不需過濾"""
     return _fetch_rss(
         NEXT_PLATFORM_RSS,
         source_type="next_platform",
         source_label="Next Platform",
         filter_keywords=False,
+        stats=stats,
     )
 
 
-def fetch_fabricated_knowledge() -> list[dict]:
+def fetch_fabricated_knowledge(stats: dict | None = None) -> list[dict]:
     """Fabricated Knowledge — 聚焦半導體供應鏈，不需過濾"""
     return _fetch_rss(
         FABRICATED_KNOWLEDGE_RSS,
         source_type="fabricated_knowledge",
         source_label="Fabricated Knowledge",
         filter_keywords=False,
+        stats=stats,
     )

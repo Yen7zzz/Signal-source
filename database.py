@@ -101,9 +101,64 @@ def init_db():
         )
     """)
 
+    # 每次 collect 每個來源一列，供來源健康檢查判斷「feed 已死／抓取失敗／正常但沒新文」
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS collect_runs (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at                 TEXT NOT NULL,
+            source_type            TEXT NOT NULL,
+            status                 TEXT NOT NULL,
+            error_msg              TEXT,
+            http_status            INTEGER,
+            redirect_to            TEXT,
+            raw_count              INTEGER,
+            passed_filter          INTEGER,
+            returned               INTEGER,
+            after_url_dedup        INTEGER,
+            after_title_dedup      INTEGER,
+            inserted               INTEGER,
+            feed_newest_published  TEXT,
+            feed_oldest_published  TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_collect_runs_source_run "
+        "ON collect_runs (source_type, run_at)"
+    )
+
     conn.commit()
     conn.close()
     logger.info("資料庫初始化完成")
+
+
+COLLECT_RUN_COLUMNS = (
+    "run_at", "source_type", "status", "error_msg", "http_status", "redirect_to",
+    "raw_count", "passed_filter", "returned", "after_url_dedup", "after_title_dedup",
+    "inserted", "feed_newest_published", "feed_oldest_published",
+)
+
+
+def save_collect_runs(rows: list[dict]) -> bool:
+    """
+    寫入一次 collect 的各來源統計（單一連線 + executemany + 一次 commit）
+    失敗只 log、回傳 False，不往外丟，避免中斷 collect
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        placeholders = ", ".join("?" for _ in COLLECT_RUN_COLUMNS)
+        conn.executemany(
+            f"INSERT INTO collect_runs ({', '.join(COLLECT_RUN_COLUMNS)}) VALUES ({placeholders})",
+            [tuple(row.get(col) for col in COLLECT_RUN_COLUMNS) for row in rows],
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"寫入 collect_runs 失敗：{e}")
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def article_exists(url: str) -> bool:
